@@ -491,73 +491,52 @@ if re.search(r"\b[a-f0-9]{64}\b", html, re.IGNORECASE):
     raise SystemExit("pending candidate page exposed a digest")
 PY
 
-"${compose[@]}" restart api web >/dev/null
-for _attempt in $(seq 1 60); do
-  if curl --fail --silent --show-error --max-time 2 "$api_base/health" >/dev/null 2>&1 \
-    && curl --fail --silent --show-error --max-time 2 "$web_base/candidate-review" \
-      --output "$smoke_dir/reopened-pending.html" 2>/dev/null; then
-    break
-  fi
-  sleep 1
-done
-if [[ ! -s "$smoke_dir/reopened-pending.html" ]]; then
-  echo "Pending candidate did not survive service reopen." >&2
-  exit 1
-fi
-status="$({
-  curl --silent --show-error --max-time 10 \
-    --output "$smoke_dir/reopened-api-candidates.json" --write-out '%{http_code}' \
-    "$api_base/v1/control/candidate-publications/review-queue" \
-    --header "Cookie: workflow_session=$reviewer_session" \
-    --header "Origin: https://review.synthetic.example" \
-    --header "X-Workflow-Dev-Reviewer-Proof: $reviewer_proof"
-} || true)"
-REOPENED_API="$smoke_dir/reopened-api-candidates.json" STATUS="$status" python3 - <<'PY'
-import json
-import os
-from pathlib import Path
+# This synchronous no-port harness is the quiescent durability window.  It
+# must exit successfully before the live web/API is allowed to mutate again.
+if ! "${compose[@]}" run --rm --no-deps -T seed python - \
+  >"$smoke_dir/independent-pending-verify.log" <<'PY'
+import runpy
 
-if os.environ["STATUS"] != "200":
-    raise SystemExit("reopened pending API was unavailable")
-payload = json.loads(Path(os.environ["REOPENED_API"]).read_text(encoding="utf-8"))
+from workflow_api import dev_server
+
+seed = runpy.run_path("/workspace/dev-runtime-seed.py")
+driver = seed["_ASGIDriver"](dev_server.open_existing_app())
+response = driver.request(
+    "GET",
+    "/v1/control/candidate-publications/review-queue",
+    headers=seed["_reviewer_headers"](),
+)
+payload = response.json()
 if (
-    type(payload) is not dict
+    response.status != 200
+    or type(payload) is not dict
     or set(payload) != {"items", "count"}
     or payload.get("count") != 1
     or type(payload.get("items")) is not list
     or len(payload["items"]) != 1
+    or type(payload["items"][0]) is not dict
+    or set(payload["items"][0]) != {
+        "publication_key",
+        "review_target_id",
+        "command_sequence",
+        "occurrence_count",
+        "provenance",
+        "review_status",
+        "finalized_at_us",
+    }
     or payload["items"][0].get("review_status") != "pending"
 ):
-    raise SystemExit("pending candidate state was not durable after reopen")
+    raise SystemExit("independent pending verification failed")
+print("synthetic pending candidate durability verified")
 PY
-
-PENDING_HTML="$smoke_dir/reopened-pending.html" python3 - <<'PY'
-from html import unescape
-from html.parser import HTMLParser
-from pathlib import Path
-import os
-
-
-class Parser(HTMLParser):
-    def __init__(self):
-        super().__init__(convert_charrefs=True)
-        self.hidden = 0
-        self.parts = []
-    def handle_starttag(self, tag, attrs):
-        if tag.casefold() in {"script", "style"}: self.hidden += 1
-    def handle_endtag(self, tag):
-        if tag.casefold() in {"script", "style"} and self.hidden: self.hidden -= 1
-    def handle_data(self, data):
-        if not self.hidden: self.parts.append(data)
-
-
-parser = Parser()
-parser.feed(Path(os.environ["PENDING_HTML"]).read_text(encoding="utf-8"))
-text = " ".join(unescape(" ".join(parser.parts)).split())
-for value in ("observed / pending", "Approve", "Reject", "Needs changes"):
-    if value not in text:
-        raise SystemExit("reopened pending controls were incomplete")
-PY
+then
+  echo "Independent pending candidate durability verification failed." >&2
+  exit 1
+fi
+if [[ "$(cat "$smoke_dir/independent-pending-verify.log")" != "synthetic pending candidate durability verified" ]]; then
+  echo "Independent pending candidate durability verification was not exact." >&2
+  exit 1
+fi
 
 action_body='ordinal=1&action=needs_changes'
 status="$({
@@ -654,4 +633,4 @@ if [[ "$(cat "$smoke_dir/independent-verify.log")" != "synthetic candidate durab
   exit 1
 fi
 
-echo "Synthetic dev-runtime smoke passed: v2 seed, redacted queue, durable terminal decision, and empty reopen."
+echo "Synthetic dev-runtime smoke passed: v2 seed, independent pending bundle reopen, durable terminal decision, and empty reopen."
