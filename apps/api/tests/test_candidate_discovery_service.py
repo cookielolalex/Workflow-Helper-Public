@@ -5,6 +5,7 @@ import hashlib
 import importlib
 import os
 import sqlite3
+from dataclasses import replace
 from pathlib import Path
 from uuid import UUID
 
@@ -14,6 +15,7 @@ from workflow_api.candidate_discovery_service import (
     CandidateDiscoveryService,
     CandidateDiscoveryUnavailableError,
     CandidateDiscoveryValidationError,
+    CandidateReviewQueueRecord,
 )
 from workflow_api.candidate_publication_service import (
     CandidatePublicationRequest,
@@ -280,6 +282,72 @@ def test_happy_path_is_authenticated_scoped_and_metadata_only(tmp_path: Path) ->
         isinstance(value, str) and value.startswith("whscope1|")
         for value in (rows[0].tenant_id, rows[0].workspace_id, rows[0].publication_key, rows[0].review_target_id)
     )
+
+
+def test_review_queue_reads_verified_evidence_and_returns_only_informed_fields(
+    tmp_path: Path,
+) -> None:
+    publication_store, _control_store, _control_service, service = _setup(tmp_path)
+    metadata = _publish(publication_store, "1", now=1_000_000)
+
+    rows = service.list_review_queue(_reviewer(), correlation_id=CORRELATION)
+
+    assert rows == [
+        CandidateReviewQueueRecord(
+            publication_key=metadata.publication_key,
+            review_target_id=metadata.review_target_id,
+            command_sequence=("LINE", "LINE"),
+            occurrence_count=2,
+            provenance="observed",
+            approval_status="unreviewed",
+            finalized_at_us=metadata.finalized_at_us,
+        )
+    ]
+    assert set(rows[0].__slots__) == {
+        "publication_key",
+        "review_target_id",
+        "command_sequence",
+        "occurrence_count",
+        "provenance",
+        "approval_status",
+        "finalized_at_us",
+    }
+
+
+def test_review_queue_suppresses_metadata_mismatch_corruption_and_post_read_race(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    publication_store, _control_store, control_service, service = _setup(tmp_path)
+    metadata = _publish(publication_store, "1", now=1_000_000)
+    record = publication_store.get_finalized(SCOPE, metadata.publication_key)
+
+    monkeypatch.setattr(
+        publication_store,
+        "get_finalized",
+        lambda *_args, **_kwargs: replace(record, job_id="mismatched-job"),
+    )
+    assert service.list_review_queue(_reviewer(), correlation_id=CORRELATION) == []
+
+    monkeypatch.setattr(
+        publication_store,
+        "get_finalized",
+        lambda *_args, **_kwargs: replace(record, derivation_evidence_jcs=b"{}"),
+    )
+    assert service.list_review_queue(_reviewer(), correlation_id=CORRELATION) == []
+
+    raced = False
+
+    def review_after_verified_read(*_args: object, **_kwargs: object):
+        nonlocal raced
+        if not raced:
+            raced = True
+            _approve(control_service, metadata, correlation_id="corr-review-after-read")
+        return record
+
+    monkeypatch.setattr(publication_store, "get_finalized", review_after_verified_read)
+    assert service.list_review_queue(_reviewer(), correlation_id=CORRELATION) == []
+    assert raced is True
 
 
 def test_authorization_and_server_scope_are_checked_before_publication_read(

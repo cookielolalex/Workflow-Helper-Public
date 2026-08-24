@@ -9,11 +9,14 @@
 
 export const MAX_CANDIDATE_REVIEW_ITEMS = 100;
 export const MAX_CANDIDATE_REVIEW_BYTES = 262_144;
+export const MAX_CANDIDATE_REVIEW_COMMANDS = 64;
 
 export type CandidateReviewRow = {
   readonly ordinal: number;
-  readonly schema_version: "1.0";
-  readonly byte_length: number;
+  readonly command_sequence: readonly string[];
+  readonly occurrence_count: number;
+  readonly provenance: "observed";
+  readonly approval_status: "unreviewed";
   readonly finalized_at: string;
 };
 
@@ -26,20 +29,14 @@ export type CandidateReviewView =
       readonly rows: readonly CandidateReviewRow[];
     };
 
-const ROUTE_RESPONSE_KEYS = ["items", "count", "next_cursor"] as const;
+const ROUTE_RESPONSE_KEYS = ["items", "count"] as const;
 const ROUTE_ITEM_KEYS = [
   "publication_key",
-  "schema_version",
-  "job_id",
-  "session_id",
-  "source_result_sha256",
-  "derivation_evidence_sha256",
   "review_target_id",
-  "content_sha256",
-  "full_sha256",
-  "publication_identity",
-  "byte_length",
-  "state",
+  "command_sequence",
+  "occurrence_count",
+  "provenance",
+  "approval_status",
   "finalized_at_us",
 ] as const;
 const LOADING_KEYS = ["status"] as const;
@@ -79,22 +76,29 @@ function hasExactKeys<T extends readonly string[]>(
   return true;
 }
 
-function boundedText(value: unknown, maximum = 4096): value is string {
+function boundedText(value: unknown, maximum: number): value is string {
   return (
     typeof value === "string" &&
     value.length > 0 &&
-    value.length <= maximum
+    value.length <= maximum &&
+    value === value.trim()
   );
 }
 
-function boundedByteLength(value: unknown): value is number {
+function validCommand(value: unknown): value is string {
   return (
-    typeof value === "number" &&
-    Number.isSafeInteger(value) &&
-    value >= 1 &&
-    value <= MAX_CANDIDATE_REVIEW_BYTES
+    boundedText(value, 128) &&
+    !Array.from(value).some((character) => {
+      const point = character.codePointAt(0) ?? 0;
+      return point < 32 || point === 127;
+    })
   );
 }
+
+const PUBLICATION_KEY_PATTERN =
+  /^candidate-publication:1\.0:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+const REVIEW_TARGET_PATTERN =
+  /^candidate-skill:1\.0:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}:sha256:[a-f0-9]{64}$/;
 
 function finalizedTimestamp(value: unknown): string | null {
   if (
@@ -116,7 +120,6 @@ function parseRouteResponse(value: unknown): CandidateReviewView {
 
   const items = value.items;
   const count = value.count;
-  const cursor = value.next_cursor;
   if (
     !Array.isArray(items) ||
     typeof count !== "number" ||
@@ -124,14 +127,14 @@ function parseRouteResponse(value: unknown): CandidateReviewView {
     count < 0 ||
     count > MAX_CANDIDATE_REVIEW_ITEMS ||
     count !== items.length ||
-    !(cursor === null || boundedText(cursor, 4096)) ||
-    (items.length === 0 && cursor !== null) ||
     items.length > MAX_CANDIDATE_REVIEW_ITEMS
   ) {
     return unavailable();
   }
 
   const rows: CandidateReviewRow[] = [];
+  const publicationKeys = new Set<string>();
+  const reviewTargets = new Set<string>();
   for (let index = 0; index < items.length; index += 1) {
     const item = items[index];
     if (!isPlainRecord(item) || !hasExactKeys(item, ROUTE_ITEM_KEYS)) {
@@ -139,29 +142,36 @@ function parseRouteResponse(value: unknown): CandidateReviewView {
     }
 
     if (
-      !boundedText(item.publication_key) ||
-      item.schema_version !== "1.0" ||
-      !boundedText(item.job_id) ||
-      !boundedText(item.session_id) ||
-      !boundedText(item.source_result_sha256, 256) ||
-      !boundedText(item.derivation_evidence_sha256, 256) ||
-      !boundedText(item.review_target_id) ||
-      !boundedText(item.content_sha256, 256) ||
-      !boundedText(item.full_sha256, 256) ||
-      !boundedText(item.publication_identity, 256) ||
-      !boundedByteLength(item.byte_length) ||
-      item.state !== "finalized"
+      typeof item.publication_key !== "string" ||
+      !PUBLICATION_KEY_PATTERN.test(item.publication_key) ||
+      typeof item.review_target_id !== "string" ||
+      !REVIEW_TARGET_PATTERN.test(item.review_target_id) ||
+      publicationKeys.has(item.publication_key) ||
+      reviewTargets.has(item.review_target_id) ||
+      !Array.isArray(item.command_sequence) ||
+      item.command_sequence.length < 2 ||
+      item.command_sequence.length > MAX_CANDIDATE_REVIEW_COMMANDS ||
+      !item.command_sequence.every(validCommand) ||
+      typeof item.occurrence_count !== "number" ||
+      !Number.isSafeInteger(item.occurrence_count) ||
+      item.occurrence_count !== item.command_sequence.length ||
+      item.provenance !== "observed" ||
+      item.approval_status !== "unreviewed"
     ) {
       return unavailable();
     }
 
     const finalizedAt = finalizedTimestamp(item.finalized_at_us);
     if (finalizedAt === null) return unavailable();
+    publicationKeys.add(item.publication_key);
+    reviewTargets.add(item.review_target_id);
 
     rows.push({
       ordinal: index + 1,
-      schema_version: "1.0",
-      byte_length: item.byte_length,
+      command_sequence: [...item.command_sequence],
+      occurrence_count: item.occurrence_count,
+      provenance: "observed",
+      approval_status: "unreviewed",
       finalized_at: finalizedAt,
     });
   }

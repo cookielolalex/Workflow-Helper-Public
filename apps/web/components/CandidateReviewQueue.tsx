@@ -32,7 +32,7 @@ export function CandidateReviewQueue({ view }: CandidateReviewQueueProps) {
               <p className="eyebrow">CANDIDATE REVIEW</p>
               <h2 id="candidate-review-heading">Candidates awaiting review</h2>
             </div>
-            <span className="muted">Read-only metadata</span>
+            <span className="muted">Observed evidence</span>
           </div>
           <div className="table-wrap">
             <table>
@@ -40,8 +40,9 @@ export function CandidateReviewQueue({ view }: CandidateReviewQueueProps) {
               <thead>
                 <tr>
                   <th scope="col">Candidate</th>
-                  <th scope="col">Schema version</th>
-                  <th scope="col">Byte length</th>
+                  <th scope="col">Observed command sequence</th>
+                  <th scope="col">Occurrences</th>
+                  <th scope="col">Status</th>
                   <th scope="col">Finalized</th>
                 </tr>
               </thead>
@@ -49,8 +50,9 @@ export function CandidateReviewQueue({ view }: CandidateReviewQueueProps) {
                 {view.rows.map((row) => (
                   <tr key={row.ordinal}>
                     <th scope="row">Candidate {row.ordinal}</th>
-                    <td>{row.schema_version}</td>
-                    <td>{row.byte_length} bytes</td>
+                    <td>{row.command_sequence.join(" → ")}</td>
+                    <td>{row.occurrence_count}</td>
+                    <td>{row.provenance} / {row.approval_status}</td>
                     <td>
                       <time dateTime={row.finalized_at}>{row.finalized_at}</time>
                     </td>

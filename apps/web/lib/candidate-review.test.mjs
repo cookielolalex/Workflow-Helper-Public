@@ -1,43 +1,41 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import test from "node:test";
 
 import {
-  MAX_CANDIDATE_REVIEW_BYTES,
+  MAX_CANDIDATE_REVIEW_COMMANDS,
   MAX_CANDIDATE_REVIEW_ITEMS,
   toCandidateReviewView,
 } from "./candidate-review.ts";
 
+const PUBLICATION_KEY =
+  "candidate-publication:1.0:01234567-89ab-4def-8123-456789abcdef";
+const REVIEW_TARGET =
+  "candidate-skill:1.0:fedcba98-7654-4321-8765-ba9876543210:sha256:" +
+  "a".repeat(64);
+
 function item(overrides = {}) {
-  const value = {
-    publication_key: "candidate-publication:synthetic",
-    schema_version: "1.0",
-    job_id: "job-synthetic",
-    session_id: "session-synthetic",
-    source_result_sha256: "source-sentinel",
-    derivation_evidence_sha256: "evidence-sentinel",
-    review_target_id: "review-target-sentinel",
-    content_sha256: "content-digest-sentinel",
-    full_sha256: "full-digest-sentinel",
-    publication_identity: "identity-sentinel",
-    byte_length: 123,
-    state: "finalized",
+  return {
+    publication_key: PUBLICATION_KEY,
+    review_target_id: REVIEW_TARGET,
+    command_sequence: ["LINE", "TRIM", "LINE", "TRIM"],
+    occurrence_count: 4,
+    provenance: "observed",
+    approval_status: "unreviewed",
     finalized_at_us: 1_000_000_000,
+    ...overrides,
   };
-  for (const [key, replacement] of Object.entries(overrides)) {
-    value[key] = replacement;
-  }
-  return value;
 }
 
-function routeResponse(items = [item()], count = items.length, next_cursor = null) {
-  return { items, count, next_cursor };
+function routeResponse(items = [item()], count = items.length) {
+  return { items, count };
 }
 
 function available(response, authenticated = true) {
   return { status: "available", authenticated, response };
 }
 
-test("closed view union covers loading, unavailable, empty, and populated", () => {
+test("closed view exposes exact informed evidence and no server binding", () => {
   assert.deepEqual(toCandidateReviewView({ status: "loading" }), {
     status: "loading",
   });
@@ -48,164 +46,116 @@ test("closed view union covers loading, unavailable, empty, and populated", () =
     status: "empty",
   });
 
-  const view = toCandidateReviewView(available(routeResponse([item()])));
+  const view = toCandidateReviewView(available(routeResponse()));
   assert.deepEqual(view, {
     status: "populated",
     rows: [
       {
         ordinal: 1,
-        schema_version: "1.0",
-        byte_length: 123,
+        command_sequence: ["LINE", "TRIM", "LINE", "TRIM"],
+        occurrence_count: 4,
+        provenance: "observed",
+        approval_status: "unreviewed",
         finalized_at: "1970-01-01T00:16:40.000Z",
       },
     ],
   });
+  const serialized = JSON.stringify(view);
+  assert.equal(serialized.includes(PUBLICATION_KEY), false);
+  assert.equal(serialized.includes(REVIEW_TARGET), false);
+  assert.deepEqual(Object.keys(view.rows[0]).sort(), [
+    "approval_status",
+    "command_sequence",
+    "finalized_at",
+    "occurrence_count",
+    "ordinal",
+    "provenance",
+  ]);
 });
 
-test("strict root and item validation fails closed", () => {
+test("strict roots, items, counts, identities, and evidence fail closed", () => {
   const malformed = [
     null,
     [],
     {},
     { status: "available", authenticated: true },
     available(null),
-    available({ items: "not-an-array", count: 0, next_cursor: null }),
-    available({ items: [null], count: 1, next_cursor: null }),
+    available({ items: "not-an-array", count: 0 }),
+    available({ items: [], count: 0, next_cursor: null }),
+    available({ items: [null], count: 1 }),
+    available(routeResponse([item({ extra: "private" })])),
+    available(routeResponse([item({ publication_key: "candidate-publication:raw" })])),
+    available(routeResponse([item({ review_target_id: "candidate-skill:raw" })])),
+    available(routeResponse([item({ command_sequence: ["LINE"] })])),
+    available(routeResponse([item({ occurrence_count: 3 })])),
+    available(routeResponse([item({ provenance: "inferred" })])),
+    available(routeResponse([item({ approval_status: "approved" })])),
+    available(routeResponse([item({ finalized_at_us: "1000" })])),
+    available(routeResponse([item()], 0)),
+    available(routeResponse([]), false),
   ];
-
-  for (const fixture of malformed) {
-    assert.deepEqual(toCandidateReviewView(fixture), { status: "unavailable" });
+  for (const value of malformed) {
+    assert.deepEqual(toCandidateReviewView(value), { status: "unavailable" });
   }
+});
 
-  const extraRoot = routeResponse([]);
-  extraRoot.private_detail = "should not cross the boundary";
-  assert.deepEqual(toCandidateReviewView(available(extraRoot)), {
-    status: "unavailable",
+test("item and occurrence bounds plus duplicate bindings are rejected", () => {
+  const bounded = Array.from({ length: MAX_CANDIDATE_REVIEW_ITEMS }, (_, index) => {
+    const digit = index.toString(16).padStart(32, "0");
+    const uuid = `${digit.slice(0, 8)}-${digit.slice(8, 12)}-4${digit.slice(13, 16)}-8${digit.slice(17, 20)}-${digit.slice(20)}`;
+    return item({
+      publication_key: `candidate-publication:1.0:${uuid}`,
+      review_target_id: `candidate-skill:1.0:${uuid}:sha256:${index.toString(16).padStart(64, "0")}`,
+    });
   });
-
-  const extraItem = item();
-  extraItem.raw = "should not cross the boundary";
+  assert.equal(toCandidateReviewView(available(routeResponse(bounded))).status, "populated");
   assert.deepEqual(
-    toCandidateReviewView(available(routeResponse([extraItem]))),
+    toCandidateReviewView(available(routeResponse([...bounded, item()]))),
+    { status: "unavailable" },
+  );
+  assert.deepEqual(
+    toCandidateReviewView(available(routeResponse([item(), item()]))),
+    { status: "unavailable" },
+  );
+  const commands = Array.from({ length: MAX_CANDIDATE_REVIEW_COMMANDS }, () => "LINE");
+  assert.equal(
+    toCandidateReviewView(available(routeResponse([
+      item({ command_sequence: commands, occurrence_count: commands.length }),
+    ]))).status,
+    "populated",
+  );
+  assert.deepEqual(
+    toCandidateReviewView(available(routeResponse([
+      item({ command_sequence: [...commands, "TRIM"], occurrence_count: commands.length + 1 }),
+    ]))),
     { status: "unavailable" },
   );
 });
 
-test("wrong types, authority failure, non-finalized state, and count mismatch stay unavailable", () => {
-  const wrongTypes = [
-    available(routeResponse([item({ schema_version: 1 })])),
-    available(routeResponse([item({ byte_length: "123" })])),
-    available(routeResponse([item({ finalized_at_us: "1000000" })])),
-    available(routeResponse([item({ state: "pending" })])),
-    available(routeResponse([item()]), false),
-    { status: "available", authenticated: "yes", response: routeResponse([]) },
-    { status: "available", authenticated: true, response: routeResponse([item()], 0) },
-    { status: "available", authenticated: true, response: routeResponse([], 0, 17) },
-  ];
-
-  for (const fixture of wrongTypes) {
-    assert.deepEqual(toCandidateReviewView(fixture), { status: "unavailable" });
-  }
-});
-
-test("the item bound is inclusive at 100 and rejects 101", () => {
-  const items = [];
-  for (let index = 0; index < MAX_CANDIDATE_REVIEW_ITEMS; index += 1) {
-    items.push(item({ publication_key: `candidate-${index}` }));
-  }
-  const accepted = toCandidateReviewView(available(routeResponse(items)));
-  assert.equal(accepted.status, "populated");
-  if (accepted.status === "populated") {
-    assert.equal(accepted.rows.length, MAX_CANDIDATE_REVIEW_ITEMS);
-    assert.equal(accepted.rows[0].ordinal, 1);
-    assert.equal(accepted.rows.at(-1).ordinal, MAX_CANDIDATE_REVIEW_ITEMS);
-  }
-
-  items.push(item({ publication_key: "candidate-over-bound" }));
-  assert.deepEqual(toCandidateReviewView(available(routeResponse(items))), {
-    status: "unavailable",
-  });
-});
-
-test("cursor is validated and then dropped from the safe view", () => {
-  const view = toCandidateReviewView(
-    available(routeResponse([item()], 1, "opaque-cursor-sentinel")),
-  );
+test("command text remains data and the React component uses escaped JSX text", () => {
+  const command = '<img src=x onerror="private-sentinel">';
+  const view = toCandidateReviewView(available(routeResponse([
+    item({ command_sequence: [command, "TRIM"], occurrence_count: 2 }),
+  ])));
   assert.equal(view.status, "populated");
-  assert.equal(JSON.stringify(view).includes("opaque-cursor-sentinel"), false);
-  assert.equal(JSON.stringify(view).includes("next_cursor"), false);
-});
-
-test("bounded bytes, generated ordinals, and forbidden source sentinels never cross", () => {
-  const view = toCandidateReviewView(
-    available(routeResponse([
-      item({ byte_length: MAX_CANDIDATE_REVIEW_BYTES }),
-      item({ publication_key: "second-sentinel", finalized_at_us: 2_000_000_000 }),
-    ])),
+  if (view.status === "populated") {
+    assert.deepEqual(view.rows[0].command_sequence, [command, "TRIM"]);
+  }
+  const component = readFileSync(
+    new URL("../components/CandidateReviewQueue.tsx", import.meta.url),
+    "utf-8",
   );
-  assert.deepEqual(view, {
-    status: "populated",
-    rows: [
-      {
-        ordinal: 1,
-        schema_version: "1.0",
-        byte_length: MAX_CANDIDATE_REVIEW_BYTES,
-        finalized_at: "1970-01-01T00:16:40.000Z",
-      },
-      {
-        ordinal: 2,
-        schema_version: "1.0",
-        byte_length: 123,
-        finalized_at: "1970-01-01T00:33:20.000Z",
-      },
-    ],
-  });
-
-  const serialized = JSON.stringify(view);
-  for (const sentinel of [
-    "candidate-publication:synthetic",
-    "source-sentinel",
-    "evidence-sentinel",
-    "review-target-sentinel",
-    "content-digest-sentinel",
-    "full-digest-sentinel",
-    "identity-sentinel",
-    "job-synthetic",
-    "session-synthetic",
-  ]) {
-    assert.equal(serialized.includes(sentinel), false, sentinel);
-  }
-  assert.equal(serialized.includes('"state":"finalized"'), false);
-  assert.deepEqual(Object.keys(view.rows[0]).sort(), [
-    "byte_length",
-    "finalized_at",
-    "ordinal",
-    "schema_version",
-  ]);
+  assert.match(component, /\{row\.command_sequence\.join\(" → "\)\}/);
+  assert.doesNotMatch(component, /dangerouslySetInnerHTML/);
 });
 
-test("invalid input never becomes empty and raw errors remain generic", () => {
-  const invalid = [
-    { status: "available", authenticated: false, response: routeResponse([]) },
-    { status: "available", authenticated: true, response: routeResponse([item({ state: "reserved" })]) },
-    { status: "available", authenticated: true, response: routeResponse([item({ byte_length: 0 })]) },
-    { status: "available", authenticated: true, response: routeResponse([item({ byte_length: MAX_CANDIDATE_REVIEW_BYTES + 1 })]) },
-    { status: "available", authenticated: true, response: routeResponse([], 1) },
-  ];
-  for (const fixture of invalid) {
-    assert.notEqual(toCandidateReviewView(fixture).status, "empty");
-  }
-
+test("throwing accessors and private details remain generic", () => {
   const throwing = {};
-  Object.defineProperty(throwing, "status", { value: "available", enumerable: true });
-  Object.defineProperty(throwing, "authenticated", { value: true, enumerable: true });
-  Object.defineProperty(throwing, "response", {
+  Object.defineProperty(throwing, "status", {
     enumerable: true,
     get() {
       throw new Error("private raw detail");
     },
   });
-  const generic = toCandidateReviewView(throwing);
-  assert.deepEqual(generic, { status: "unavailable" });
-  assert.equal(JSON.stringify(generic).includes("private raw detail"), false);
+  assert.deepEqual(toCandidateReviewView(throwing), { status: "unavailable" });
 });

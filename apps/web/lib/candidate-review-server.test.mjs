@@ -42,17 +42,11 @@ function configure() {
 function item() {
   return {
     publication_key: PUBLICATION_KEY,
-    schema_version: "1.0",
-    job_id: "job-private",
-    session_id: "session-private",
-    source_result_sha256: "b".repeat(64),
-    derivation_evidence_sha256: "c".repeat(64),
     review_target_id: REVIEW_TARGET,
-    content_sha256: "d".repeat(64),
-    full_sha256: "e".repeat(64),
-    publication_identity: "f".repeat(64),
-    byte_length: 321,
-    state: "finalized",
+    command_sequence: ["LINE", "TRIM", "LINE", "TRIM"],
+    occurrence_count: 4,
+    provenance: "observed",
+    approval_status: "unreviewed",
     finalized_at_us: 1_000_000,
   };
 }
@@ -148,7 +142,7 @@ test("loads one redacted row through the existing synchronous GET validator", as
   const calls = [];
   const fetcher = async (url, init) => {
     calls.push({ url, init });
-    return jsonResponse(200, { items: [item()], count: 1, next_cursor: null });
+    return jsonResponse(200, { items: [item()], count: 1 });
   };
 
   const view = await loadCandidateReviewQueue(fetcher);
@@ -158,8 +152,10 @@ test("loads one redacted row through the existing synchronous GET validator", as
     rows: [
       {
         ordinal: 1,
-        schema_version: "1.0",
-        byte_length: 321,
+        command_sequence: ["LINE", "TRIM", "LINE", "TRIM"],
+        occurrence_count: 4,
+        provenance: "observed",
+        approval_status: "unreviewed",
         finalized_at: "1970-01-01T00:00:01.000Z",
       },
     ],
@@ -167,7 +163,7 @@ test("loads one redacted row through the existing synchronous GET validator", as
   assert.equal(calls.length, 1);
   assert.equal(
     calls[0].url,
-    "http://api:8000/v1/control/candidate-publications?correlation_id=web-candidate-review&limit=100",
+    "http://api:8000/v1/control/candidate-publications/review-queue?correlation_id=web-candidate-review&limit=100",
   );
   assert.equal(calls[0].init.method, "GET");
   assert.equal(calls[0].init.redirect, "error");
@@ -186,7 +182,7 @@ test("re-fetches and binds the ordinal server-side before validated POST", async
   const fetcher = async (url, init) => {
     calls.push({ url, init });
     if (calls.length === 1) {
-      return jsonResponse(200, { items: [item()], count: 1, next_cursor: null });
+      return jsonResponse(200, { items: [item()], count: 1 });
     }
     return jsonResponse(200, { status: "approved" });
   };
@@ -216,7 +212,6 @@ test("malformed cached GET or POST responses fail closed without leaking details
     return jsonResponse(200, {
       items: [{ ...item(), unexpected: "private" }],
       count: 1,
-      next_cursor: null,
     });
   };
   assert.equal(await submitCandidateReviewAction(1, "approve", invalidList), "unavailable");
@@ -226,7 +221,7 @@ test("malformed cached GET or POST responses fail closed without leaking details
   const mismatchedPost = async () => {
     calls += 1;
     return calls === 1
-      ? jsonResponse(200, { items: [item()], count: 1, next_cursor: null })
+      ? jsonResponse(200, { items: [item()], count: 1 })
       : jsonResponse(200, { status: "rejected", detail: "private" });
   };
   assert.equal(await submitCandidateReviewAction(1, "approve", mismatchedPost), "unavailable");
@@ -238,7 +233,7 @@ test("environment, API base, credentials, redirects, and byte bounds fail closed
   let calls = 0;
   const fetcher = async () => {
     calls += 1;
-    return jsonResponse(200, { items: [], count: 0, next_cursor: null });
+    return jsonResponse(200, { items: [], count: 0 });
   };
   for (const mutate of [
     () => { process.env.ENVIRONMENT = "production"; },
@@ -255,7 +250,7 @@ test("environment, API base, credentials, redirects, and byte bounds fail closed
 
   configure();
   const redirected = async () => {
-    const response = jsonResponse(200, { items: [], count: 0, next_cursor: null });
+    const response = jsonResponse(200, { items: [], count: 0 });
     Object.defineProperty(response, "redirected", { value: true });
     return response;
   };
@@ -263,7 +258,7 @@ test("environment, API base, credentials, redirects, and byte bounds fail closed
 
   const oversized = async () => jsonResponse(
     200,
-    { items: [], count: 0, next_cursor: null },
+    { items: [], count: 0 },
     { "content-length": "262145" },
   );
   assert.deepEqual(await loadCandidateReviewQueue(oversized), { status: "unavailable" });

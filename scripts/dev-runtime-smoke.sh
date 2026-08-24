@@ -98,7 +98,7 @@ fi
 status="$({
   curl --silent --show-error --max-time 10 \
     --output "$smoke_dir/api-candidates.json" --write-out '%{http_code}' \
-    "$api_base/v1/control/candidate-publications?correlation_id=dev-smoke&limit=100" \
+    "$api_base/v1/control/candidate-publications/review-queue" \
     --header "Cookie: workflow_session=$reviewer_session" \
     --header "Origin: https://review.synthetic.example" \
     --header "X-Workflow-Dev-Reviewer-Proof: $reviewer_proof"
@@ -121,13 +121,27 @@ try:
             if type(value) is int:
                 count = str(value)
             items = payload.get("items")
+            item = items[0] if isinstance(items, list) and len(items) == 1 else None
             valid = (
-                set(payload) == {"items", "count", "next_cursor"}
+                set(payload) == {"items", "count"}
                 and type(value) is int
                 and value == 1
                 and isinstance(items, list)
                 and len(items) == 1
-                and payload.get("next_cursor") is None
+                and isinstance(item, dict)
+                and set(item) == {
+                    "publication_key",
+                    "review_target_id",
+                    "command_sequence",
+                    "occurrence_count",
+                    "provenance",
+                    "approval_status",
+                    "finalized_at_us",
+                }
+                and item.get("command_sequence") == ["LINE", "TRIM", "LINE", "TRIM"]
+                and item.get("occurrence_count") == 4
+                and item.get("provenance") == "observed"
+                and item.get("approval_status") == "unreviewed"
             )
             if valid:
                 schema = "valid"
@@ -330,6 +344,9 @@ required = (
     "Candidate review queue",
     "Candidates awaiting review",
     "Candidate 1",
+    "LINE → TRIM → LINE → TRIM",
+    "4",
+    "observed / unreviewed",
     "Approve",
     "Reject",
 )
@@ -351,6 +368,14 @@ for value in (
         raise SystemExit("candidate review page exposed private server evidence")
 if re.search(r"candidate-(?:publication|skill):", html, re.IGNORECASE):
     raise SystemExit("candidate review page exposed a raw candidate identifier")
+if re.search(
+    r"\b[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\b",
+    html,
+    re.IGNORECASE,
+):
+    raise SystemExit("candidate review page exposed a UUID")
+if re.search(r"\b[a-f0-9]{64}\b", html, re.IGNORECASE):
+    raise SystemExit("candidate review page exposed a digest")
 PY
 
 action_body='ordinal=1&action=approve'
@@ -430,6 +455,14 @@ if "No candidates awaiting review." not in visible_text(html):
     raise SystemExit("reviewed candidate remained visible")
 if re.search(r"candidate-(?:publication|skill):", html, re.IGNORECASE):
     raise SystemExit("empty candidate page exposed a raw candidate identifier")
+if re.search(
+    r"\b[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\b",
+    html,
+    re.IGNORECASE,
+):
+    raise SystemExit("empty candidate page exposed a UUID")
+if re.search(r"\b[a-f0-9]{64}\b", html, re.IGNORECASE):
+    raise SystemExit("empty candidate page exposed a digest")
 PY
 
 "${compose[@]}" run --rm --no-deps seed \
