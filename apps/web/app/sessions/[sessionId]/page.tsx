@@ -140,8 +140,12 @@ export default async function SessionPage({ params }: SessionPageProps) {
         </article>
         <article className="panel placeholder-panel">
           <p className="eyebrow">EXPERT REVIEW</p>
-          <h2>High-information questions</h2>
-          <p>Review mutations are deferred until authentication and audit logging are implemented.</p>
+          <h2>Candidate knowledge</h2>
+          <p>
+            Review the redacted synthetic candidate queue through the guarded,
+            append-only development review path.
+          </p>
+          <Link href="/candidate-review">Review candidates →</Link>
         </article>
       </section>
     </div>

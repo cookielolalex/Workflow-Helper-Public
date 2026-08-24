@@ -3,6 +3,7 @@ import test from "node:test";
 
 import {
   candidateReviewRedirect,
+  getSyntheticSessionRoute,
   loadCandidateReviewQueue,
   parseCandidateReviewActionRequest,
   submitCandidateReviewAction,
@@ -21,6 +22,7 @@ const REVIEWER_SESSION = Buffer.from(
 const REVIEWER_CSRF = Buffer.from(
   Array.from({ length: 32 }, (_, index) => index + 33),
 ).toString("base64url");
+const SESSION_ID = "d6d9e5b7-c9bc-4eb1-ae4a-1a14ed5b1350";
 
 test.afterEach(() => {
   process.env = { ...ORIGINAL_ENV };
@@ -66,6 +68,80 @@ function jsonResponse(status, body, extraHeaders = {}) {
     },
   });
 }
+
+test("executes only fixed authenticated synthetic session GET descriptors", async () => {
+  configure();
+  const calls = [];
+  const fetcher = async (url, init) => {
+    calls.push({ url, init });
+    return jsonResponse(200, { marker: calls.length });
+  };
+
+  assert.deepEqual(
+    await getSyntheticSessionRoute({ route: "list" }, fetcher),
+    { status: 200, body: { marker: 1 } },
+  );
+  assert.deepEqual(
+    await getSyntheticSessionRoute(
+      { route: "detail", session_id: SESSION_ID },
+      fetcher,
+    ),
+    { status: 200, body: { marker: 2 } },
+  );
+  assert.deepEqual(
+    await getSyntheticSessionRoute(
+      { route: "timeline", session_id: SESSION_ID },
+      fetcher,
+    ),
+    { status: 200, body: { marker: 3 } },
+  );
+
+  assert.deepEqual(
+    calls.map(({ url }) => url),
+    [
+      "http://api:8000/v1/sessions",
+      `http://api:8000/v1/sessions/${SESSION_ID}`,
+      `http://api:8000/v1/sessions/${SESSION_ID}/timeline`,
+    ],
+  );
+  for (const { init } of calls) {
+    assert.equal(init.method, "GET");
+    assert.equal(init.cache, "no-store");
+    assert.equal(init.redirect, "error");
+    assert.equal(init.credentials, "omit");
+    assert.equal(init.headers.get("cookie"), `workflow_session=${REVIEWER_SESSION}`);
+    assert.equal(init.headers.get("origin"), "https://review.synthetic.example");
+    assert.equal(init.headers.get("x-workflow-dev-reviewer-proof"), REVIEWER_PROOF);
+    assert.equal(init.headers.has("x-csrf-token"), false);
+  }
+});
+
+test("session GET rejects arbitrary paths, malformed identities, and authority gaps", async () => {
+  configure();
+  let calls = 0;
+  const fetcher = async () => {
+    calls += 1;
+    return jsonResponse(200, {});
+  };
+  const invalid = [
+    { route: "arbitrary", path: "/v1/control" },
+    { route: "list", session_id: SESSION_ID },
+    { route: "detail" },
+    { route: "detail", session_id: SESSION_ID.toUpperCase() },
+    { route: "detail", session_id: "session-1" },
+    { route: "timeline", session_id: `${SESSION_ID}?private=1` },
+    Object.create({ route: "list" }),
+  ];
+  for (const descriptor of invalid) {
+    assert.equal(await getSyntheticSessionRoute(descriptor, fetcher), null);
+  }
+  process.env.ENVIRONMENT = "production";
+  assert.equal(
+    await getSyntheticSessionRoute({ route: "list" }, fetcher),
+    null,
+  );
+  assert.equal(calls, 0);
+});
 
 test("loads one redacted row through the existing synchronous GET validator", async () => {
   configure();
