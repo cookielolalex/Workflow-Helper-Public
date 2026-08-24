@@ -116,3 +116,5 @@ and AI labeling on selected evidence.
 Synthetic/code-only foundation with recording disabled by default. See
 `docs/MVP_SCOPE.md`, `docs/ARCHITECTURE.md`, and the accepted ADRs for current
 acceptance criteria and deferred live-pilot work.
+
+<!-- staged public verification trigger -->
