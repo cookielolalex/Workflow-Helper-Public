@@ -1056,6 +1056,43 @@ def test_bounded_unreviewed_discovery_and_cursor(tmp_path: Path) -> None:
     assert store.list_finalized_unreviewed(SCOPE, cursor=rows[0].cursor) == []
 
 
+def test_bounded_finalized_read_does_not_interpret_review_state(tmp_path: Path) -> None:
+    control_path = tmp_path / "control.sqlite"
+    _create_review_projection_database(control_path)
+    store = SQLiteCandidatePublicationStore(
+        tmp_path / "candidate.sqlite", control_database_path=control_path
+    )
+    reserved = _reserve(store)
+    finalized = store.finalize(
+        SCOPE,
+        reserved.publication_key,
+        "writer-a",
+        reserved.reservation_epoch,
+        canonical_candidate_publication_bytes(_evidence()),
+        now=1_100_000,
+    )
+    target = _qualify(SCOPE, "review_target", finalized.review_target_id)
+    with sqlite3.connect(control_path) as connection:
+        connection.execute(
+            "INSERT INTO review_events "
+            "(event_id,target_id,idempotency_key,content_digest,actor_id,status,"
+            "provenance_json,detail_json,occurred_at) VALUES (?,?,?,?,?,?,?,?,?)",
+            ("event-pending", target, "idem-pending", "d" * 64, "reviewer", "pending", "{}", "{}", 1),
+        )
+        connection.execute(
+            "INSERT INTO review_projection "
+            "(target_id,status,version,last_event_id,actor_id,provenance_json,detail_json,occurred_at) "
+            "VALUES (?,?,?,?,?,?,?,?)",
+            (target, "pending", 1, "event-pending", "reviewer", "{}", "{}", 1),
+        )
+
+    rows = store.list_finalized(SCOPE, limit=1)
+    assert [row.publication_key for row in rows] == [reserved.publication_key]
+    assert not hasattr(rows[0], "canonical_bytes")
+    assert store.list_finalized(SCOPE, limit=1, cursor=rows[0].cursor) == []
+    assert store.list_finalized_unreviewed(SCOPE) == []
+
+
 def test_review_projection_database_is_fail_closed_when_schema_is_missing(tmp_path: Path) -> None:
     control_path = tmp_path / "control.sqlite"
     with sqlite3.connect(control_path):

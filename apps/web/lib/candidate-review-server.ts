@@ -30,7 +30,7 @@ const FORBIDDEN_PROOF_VALUES = new Set([
 ]);
 
 type CachedResponse = Readonly<{ status: number; body: unknown }>;
-type ReviewAction = "approve";
+type ReviewAction = "approve" | "start_review" | "reject" | "needs_changes";
 type ParsedAction = Readonly<{ ordinal: number; action: ReviewAction }>;
 type ServerConfig = Readonly<{
   apiBase: string;
@@ -299,7 +299,7 @@ export async function submitCandidateReviewAction(
   fetcher: typeof fetch = fetch,
 ): Promise<CandidateReviewActionResult> {
   if (
-    action !== "approve" ||
+    !["approve", "start_review", "reject", "needs_changes"].includes(action) ||
     !Number.isSafeInteger(ordinal) ||
     ordinal < 1 ||
     ordinal > 100
@@ -310,6 +310,14 @@ export async function submitCandidateReviewAction(
   if (config === null) return "unavailable";
   const listed = await cachedList(config, "web-candidate-action", fetcher);
   if (listed === null || listed.view.status !== "populated") return "unavailable";
+  const row = listed.view.rows[ordinal - 1];
+  if (
+    row === undefined ||
+    (row.review_status === "unreviewed" && !["approve", "start_review"].includes(action)) ||
+    (row.review_status === "pending" && !["approve", "reject", "needs_changes"].includes(action))
+  ) {
+    return "unavailable";
+  }
   const item = rawItem(listed.cached.body, ordinal);
   if (item === null) return "unavailable";
   const publicationKey = item.publication_key;
@@ -317,7 +325,12 @@ export async function submitCandidateReviewAction(
   if (typeof publicationKey !== "string" || typeof reviewTarget !== "string") {
     return "unavailable";
   }
-  const status = "approved";
+  const status = {
+    approve: "approved",
+    start_review: "pending",
+    reject: "rejected",
+    needs_changes: "needs_changes",
+  }[action];
   const identity = createHash("sha256")
     .update(`workflow-helper\0dev-review\0${publicationKey}\0${status}`)
     .digest("hex");
@@ -411,7 +424,7 @@ export async function parseCandidateReviewActionRequest(
   if (body === null || body.includes("candidate-publication") || body.includes("candidate-skill")) {
     return null;
   }
-  const match = /^ordinal=((?:[1-9][0-9]?|100))&action=(approve)$/.exec(body);
+  const match = /^ordinal=((?:[1-9][0-9]?|100))&action=(approve|start_review|reject|needs_changes)$/.exec(body);
   if (match === null) return null;
   const ordinal = Number(match[1]);
   if (ordinal > 100) return null;

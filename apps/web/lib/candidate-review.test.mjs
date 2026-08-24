@@ -21,7 +21,7 @@ function item(overrides = {}) {
     command_sequence: ["LINE", "TRIM", "LINE", "TRIM"],
     occurrence_count: 4,
     provenance: "observed",
-    approval_status: "unreviewed",
+    review_status: "unreviewed",
     finalized_at_us: 1_000_000_000,
     ...overrides,
   };
@@ -55,7 +55,7 @@ test("closed view exposes exact informed evidence and no server binding", () => 
         command_sequence: ["LINE", "TRIM", "LINE", "TRIM"],
         occurrence_count: 4,
         provenance: "observed",
-        approval_status: "unreviewed",
+        review_status: "unreviewed",
         finalized_at: "1970-01-01T00:16:40.000Z",
       },
     ],
@@ -64,13 +64,20 @@ test("closed view exposes exact informed evidence and no server binding", () => 
   assert.equal(serialized.includes(PUBLICATION_KEY), false);
   assert.equal(serialized.includes(REVIEW_TARGET), false);
   assert.deepEqual(Object.keys(view.rows[0]).sort(), [
-    "approval_status",
     "command_sequence",
     "finalized_at",
     "occurrence_count",
     "ordinal",
     "provenance",
+    "review_status",
   ]);
+  const pending = toCandidateReviewView(
+    available(routeResponse([item({ review_status: "pending" })])),
+  );
+  assert.equal(pending.status, "populated");
+  if (pending.status === "populated") {
+    assert.equal(pending.rows[0].review_status, "pending");
+  }
 });
 
 test("strict roots, items, counts, identities, and evidence fail closed", () => {
@@ -89,7 +96,7 @@ test("strict roots, items, counts, identities, and evidence fail closed", () => 
     available(routeResponse([item({ command_sequence: ["LINE"] })])),
     available(routeResponse([item({ occurrence_count: 3 })])),
     available(routeResponse([item({ provenance: "inferred" })])),
-    available(routeResponse([item({ approval_status: "approved" })])),
+    available(routeResponse([item({ review_status: "approved" })])),
     available(routeResponse([item({ finalized_at_us: "1000" })])),
     available(routeResponse([item()], 0)),
     available(routeResponse([]), false),

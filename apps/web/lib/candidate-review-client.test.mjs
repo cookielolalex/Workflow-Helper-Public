@@ -22,7 +22,7 @@ function item(overrides = {}) {
     command_sequence: ["LINE", "TRIM", "LINE", "TRIM"],
     occurrence_count: 4,
     provenance: "observed",
-    approval_status: "unreviewed",
+    review_status: "unreviewed",
     finalized_at_us: 1_000_000_000,
     ...overrides,
   };
@@ -102,7 +102,7 @@ test("strict 200 response becomes the redacted informed view", () => {
         command_sequence: ["LINE", "TRIM", "LINE", "TRIM"],
         occurrence_count: 4,
         provenance: "observed",
-        approval_status: "unreviewed",
+        review_status: "unreviewed",
         finalized_at: "1970-01-01T00:16:40.000Z",
       },
     ],
@@ -118,7 +118,7 @@ test("empty is distinct from malformed and non-200 responses", () => {
     null,
     {},
     { items: [], count: 0, extra: "private" },
-    routeResponse([item({ approval_status: "approved" })]),
+    routeResponse([item({ review_status: "approved" })]),
     routeResponse([item()], 0),
   ]) {
     assert.deepEqual(readWith(body), { status: "unavailable" });
