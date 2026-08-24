@@ -78,6 +78,8 @@ export default async function DashboardPage() {
             <span className="muted">Synthetic data only until pilot approval</span>
             <br />
             <Link href="/candidate-review">Review candidates →</Link>
+            <br />
+            <Link href="/approved-workflows">Approved workflows →</Link>
           </div>
         </div>
         {!dashboard ? (

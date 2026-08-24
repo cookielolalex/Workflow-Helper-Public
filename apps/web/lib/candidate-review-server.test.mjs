@@ -4,7 +4,9 @@ import test from "node:test";
 
 import {
   candidateReviewRedirect,
+  downloadApprovedWorkflow,
   getSyntheticSessionRoute,
+  loadApprovedWorkflows,
   loadCandidateReviewOutcomes,
   loadCandidateReviewQueue,
   parseCandidateReviewActionRequest,
@@ -50,6 +52,17 @@ function item(reviewStatus = "unreviewed") {
     provenance: "observed",
     review_status: reviewStatus,
     finalized_at_us: 1_000_000,
+  };
+}
+
+function outcome(reviewStatus = "approved", overrides = {}) {
+  return {
+    command_sequence: ["LINE", "TRIM", "LINE", "TRIM"],
+    occurrence_count: 4,
+    provenance: "observed",
+    review_status: reviewStatus,
+    decided_at_us: 2_000_000,
+    ...overrides,
   };
 }
 
@@ -208,6 +221,257 @@ test("loads terminal outcomes through only the fixed authenticated server route"
   assert.equal(serialized.includes(PUBLICATION_KEY), false);
   assert.equal(serialized.includes(REVIEW_TARGET), false);
   assert.equal(serialized.includes(REVIEWER_PROOF), false);
+});
+
+test("approved catalog strictly filters validated terminal outcomes", async () => {
+  configure();
+  const calls = [];
+  const fetcher = async (url, init) => {
+    calls.push({ url, init });
+    return jsonResponse(200, {
+      items: [outcome("rejected"), outcome("approved"), outcome("needs_changes")],
+      count: 3,
+    });
+  };
+
+  assert.deepEqual(await loadApprovedWorkflows(fetcher), {
+    status: "populated",
+    rows: [{
+      ordinal: 1,
+      command_sequence: ["LINE", "TRIM", "LINE", "TRIM"],
+      occurrence_count: 4,
+      provenance: "observed",
+      approval_status: "approved",
+      decided_at: "1970-01-01T00:00:02.000Z",
+    }],
+  });
+  assert.equal(calls.length, 1);
+  assert.equal(
+    calls[0].url,
+    "http://api:8000/v1/control/candidate-publications/review-outcomes",
+  );
+  assert.equal(JSON.stringify(await loadApprovedWorkflows(async () =>
+    jsonResponse(200, { items: [outcome("rejected")], count: 1 })
+  )).includes("rejected"), false);
+});
+
+test("approved catalog fails closed on corrupt or unavailable outcomes", async () => {
+  configure();
+  for (const fetcher of [
+    async () => jsonResponse(200, {
+      items: [outcome("approved", { publication_key: PUBLICATION_KEY })],
+      count: 1,
+    }),
+    async () => jsonResponse(200, {
+      items: [outcome("approved", { occurrence_count: 3 })],
+      count: 1,
+    }),
+    async () => jsonResponse(200, { items: [outcome("unreviewed")], count: 1 }),
+    async () => jsonResponse(503, { private: REVIEW_TARGET }),
+    async () => { throw new Error("private transport failure"); },
+  ]) {
+    assert.deepEqual(await loadApprovedWorkflows(fetcher), { status: "unavailable" });
+  }
+  assert.deepEqual(
+    await loadApprovedWorkflows(async () => jsonResponse(200, { items: [], count: 0 })),
+    { status: "empty" },
+  );
+});
+
+function approvedDownloadRequest(
+  query = "?ordinal=1",
+  headers = {},
+  path = "/approved-workflows/download",
+  method = "GET",
+) {
+  return new Request(`http://web:3000${path}${query}`, {
+    method,
+    headers: { host: "127.0.0.1:3000", ...headers },
+    ...(method === "GET" || method === "HEAD" ? {} : { body: "private" }),
+  });
+}
+
+async function assertHardenedDownloadNotFound(response) {
+  assert.equal(response.status, 404);
+  assert.equal(await response.text(), "");
+  assert.deepEqual(Object.fromEntries(response.headers), {
+    "cache-control": "no-store",
+    "content-length": "0",
+    "referrer-policy": "no-referrer",
+    "x-content-type-options": "nosniff",
+  });
+  assert.equal(response.headers.has("content-type"), false);
+  assert.equal(response.headers.has("content-disposition"), false);
+}
+
+test("approved download re-fetches ordinal and emits deterministic bounded safe bytes", async () => {
+  configure();
+  const calls = [];
+  const fetcher = async (url, init) => {
+    calls.push({ url, init });
+    return jsonResponse(200, {
+      items: [outcome("rejected"), outcome("approved")],
+      count: 2,
+    });
+  };
+  const response = await downloadApprovedWorkflow(approvedDownloadRequest(), fetcher);
+  const expected = `${JSON.stringify({
+    schema: "workflow-helper.approved-workflow",
+    version: "1.0",
+    command_sequence: ["LINE", "TRIM", "LINE", "TRIM"],
+    occurrence_count: 4,
+    provenance: "observed",
+    approval_status: "approved",
+    decided_at: "1970-01-01T00:00:02.000Z",
+  })}\n`;
+
+  assert.equal(response.status, 200);
+  assert.equal(await response.text(), expected);
+  assert.equal(response.headers.get("content-length"), String(Buffer.byteLength(expected)));
+  assert.equal(response.headers.get("content-type"), "application/json; charset=utf-8");
+  assert.equal(
+    response.headers.get("content-disposition"),
+    'attachment; filename="approved-workflow.json"',
+  );
+  assert.equal(response.headers.get("cache-control"), "no-store");
+  assert.equal(response.headers.get("x-content-type-options"), "nosniff");
+  assert.equal(response.headers.get("referrer-policy"), "no-referrer");
+  assert.equal(calls.length, 1);
+  for (const forbidden of [
+    PUBLICATION_KEY,
+    REVIEW_TARGET,
+    REVIEWER_PROOF,
+    REVIEWER_SESSION,
+    REVIEWER_CSRF,
+    "reason",
+    "evidence",
+    "sha256",
+    "artifact",
+  ]) {
+    assert.equal(expected.includes(forbidden), false);
+  }
+});
+
+test("approved download request and ordinal binding fail closed as bodyless 404", async () => {
+  configure();
+  let calls = 0;
+  const fetcher = async () => {
+    calls += 1;
+    return jsonResponse(200, { items: [outcome("approved")], count: 1 });
+  };
+  for (const request of [
+    approvedDownloadRequest(""),
+    approvedDownloadRequest("?ordinal=0"),
+    approvedDownloadRequest("?ordinal=101"),
+    approvedDownloadRequest("?ordinal=01"),
+    approvedDownloadRequest("?ordinal=%31"),
+    approvedDownloadRequest("?ordinal=1&ordinal=1"),
+    approvedDownloadRequest("?ordinal=1&extra=x"),
+    approvedDownloadRequest("?extra=x&ordinal=1"),
+    approvedDownloadRequest("?ordinal=1", {}, "/approved-workflows"),
+    approvedDownloadRequest("?ordinal=1", {}, "/approved-workflows/download", "POST"),
+    approvedDownloadRequest("?ordinal=1", { host: "localhost:3000" }),
+    approvedDownloadRequest("?ordinal=1", { cookie: "private=1" }),
+    approvedDownloadRequest("?ordinal=1", { authorization: "Bearer private" }),
+    approvedDownloadRequest("?ordinal=1", { "content-type": "application/json" }),
+    approvedDownloadRequest("?ordinal=1", { "content-length": "0" }),
+    approvedDownloadRequest("?ordinal=1", { "x-workflow-dev-proof": "private" }),
+    approvedDownloadRequest("?ordinal=1", { "x-workflow-dev-reviewer-proof": "private" }),
+    approvedDownloadRequest("?ordinal=1", { "x-csrf-token": "private" }),
+  ]) {
+    const before = calls;
+    const response = await downloadApprovedWorkflow(request, fetcher);
+    await assertHardenedDownloadNotFound(response);
+    assert.equal(calls, before);
+  }
+  for (const query of ["?ordinal=2", "?ordinal=100"]) {
+    const response = await downloadApprovedWorkflow(approvedDownloadRequest(query), fetcher);
+    await assertHardenedDownloadNotFound(response);
+  }
+  assert.equal(calls, 2);
+
+  for (const unavailable of [
+    async () => jsonResponse(503, { private: REVIEW_TARGET }),
+    async () => jsonResponse(200, {
+      items: [outcome("approved", { occurrence_count: 3 })],
+      count: 1,
+    }),
+    async () => { throw new Error("private download failure"); },
+  ]) {
+    const response = await downloadApprovedWorkflow(approvedDownloadRequest(), unavailable);
+    await assertHardenedDownloadNotFound(response);
+  }
+});
+
+test("approved download stays below the fixed export cap at upstream maxima", async () => {
+  configure();
+  const commands = Array.from({ length: 64 }, () => "X".repeat(128));
+  const response = await downloadApprovedWorkflow(
+    approvedDownloadRequest(),
+    async () => jsonResponse(200, {
+      items: [outcome("approved", {
+        command_sequence: commands,
+        occurrence_count: commands.length,
+      })],
+      count: 1,
+    }),
+  );
+  const bytes = new Uint8Array(await response.arrayBuffer());
+  assert.equal(response.status, 200);
+  assert.ok(bytes.byteLength <= 65_536);
+  assert.equal(response.headers.get("content-length"), String(bytes.byteLength));
+});
+
+test("oversized serialization and thrown export paths return the hardened 404", async () => {
+  configure();
+  const original = globalThis.TextEncoder;
+  try {
+    globalThis.TextEncoder = class {
+      encode() {
+        return new Uint8Array(65_537);
+      }
+    };
+    await assertHardenedDownloadNotFound(
+      await downloadApprovedWorkflow(
+        approvedDownloadRequest(),
+        async () => jsonResponse(200, { items: [outcome("approved")], count: 1 }),
+      ),
+    );
+
+    globalThis.TextEncoder = class {
+      encode() {
+        throw new Error("private serialization failure");
+      }
+    };
+    await assertHardenedDownloadNotFound(
+      await downloadApprovedWorkflow(
+        approvedDownloadRequest(),
+        async () => jsonResponse(200, { items: [outcome("approved")], count: 1 }),
+      ),
+    );
+  } finally {
+    globalThis.TextEncoder = original;
+  }
+});
+
+test("approved page and route keep authority and raw bindings server-side", () => {
+  const page = readFileSync(
+    new URL("../app/approved-workflows/page.tsx", import.meta.url),
+    "utf-8",
+  );
+  const route = readFileSync(
+    new URL("../app/approved-workflows/download/route.ts", import.meta.url),
+    "utf-8",
+  );
+  assert.match(page, /loadApprovedWorkflows/);
+  assert.match(page, /approved-workflows\/download\?ordinal=/);
+  assert.match(route, /downloadApprovedWorkflow\(request\)/);
+  for (const source of [page, route]) {
+    assert.equal(source.includes(PUBLICATION_KEY), false);
+    assert.equal(source.includes(REVIEW_TARGET), false);
+    assert.equal(source.includes(REVIEWER_PROOF), false);
+    assert.doesNotMatch(source, /NEXT_PUBLIC|WORKFLOW_DEV_REVIEWER|publication_key|review_target_id/);
+  }
 });
 
 test("each legal effective-state action re-fetches and posts exactly once", async () => {
