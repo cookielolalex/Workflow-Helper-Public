@@ -22,6 +22,7 @@ from workflow_api.candidate_publication_service import (
     CandidatePublicationService,
 )
 from workflow_api.candidate_publication_store import (
+    CandidatePublicationCursor,
     CandidatePublicationMetadata,
     SQLiteCandidatePublicationStore,
     _restricted_jcs,
@@ -242,6 +243,22 @@ def _approve(
     )
 
 
+def _transition(
+    control_service: ControlService,
+    metadata: CandidatePublicationMetadata,
+    status: str,
+    *,
+    suffix: str,
+) -> None:
+    control_service.append_candidate_review(
+        _reviewer(),
+        publication=metadata,
+        status=status,
+        idempotency_key=f"review-{suffix}-{metadata.publication_key}",
+        correlation_id=f"corr-review-{suffix}",
+    )
+
+
 def test_import_and_construction_are_inert_and_types_are_exact(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -299,7 +316,7 @@ def test_review_queue_reads_verified_evidence_and_returns_only_informed_fields(
             command_sequence=("LINE", "LINE"),
             occurrence_count=2,
             provenance="observed",
-            approval_status="unreviewed",
+            review_status="unreviewed",
             finalized_at_us=metadata.finalized_at_us,
         )
     ]
@@ -309,9 +326,113 @@ def test_review_queue_reads_verified_evidence_and_returns_only_informed_fields(
         "command_sequence",
         "occurrence_count",
         "provenance",
-        "approval_status",
+        "review_status",
         "finalized_at_us",
     }
+
+
+def test_review_queue_includes_pending_and_suppresses_every_terminal_state(
+    tmp_path: Path,
+) -> None:
+    publication_store, _control_store, control_service, service = _setup(tmp_path)
+    metadata = _publish(publication_store, "1", now=1_000_000)
+    _transition(control_service, metadata, "pending", suffix="pending")
+
+    rows = service.list_review_queue(_reviewer(), correlation_id=CORRELATION)
+    assert len(rows) == 1
+    assert rows[0].review_status == "pending"
+
+    _transition(control_service, metadata, "needs_changes", suffix="terminal")
+    assert service.list_review_queue(_reviewer(), correlation_id=CORRELATION) == []
+
+
+def test_review_queue_pages_past_terminal_corrupt_and_raced_rows(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    publication_store, _control_store, _control_service, service = _setup(tmp_path)
+    raced = _publish(publication_store, "1", now=2_000_000)
+    unreviewed = _publish(publication_store, "4", now=3_000_000)
+    pending = _publish(publication_store, "7", now=4_000_000)
+    terminal = [
+        replace(
+            raced,
+            publication_key=f"candidate-publication:1.0:{UUID(int=index + 100, version=4)}",
+            finalized_at_us=1_000_000 + index,
+        )
+        for index in range(98)
+    ]
+    corrupt = replace(
+        raced,
+        publication_key=f"candidate-publication:1.0:{UUID(int=999, version=4)}",
+        finalized_at_us=1_100_000,
+    )
+    first_page = [*terminal, corrupt, raced]
+    calls: list[CandidatePublicationCursor | None] = []
+
+    def list_pages(
+        _scope: TenantWorkspaceScope,
+        *,
+        limit: int,
+        cursor: CandidatePublicationCursor | None,
+    ) -> list[CandidatePublicationMetadata]:
+        assert limit == 100
+        calls.append(cursor)
+        return first_page if cursor is None else [unreviewed, pending]
+
+    raced_reads = 0
+
+    def effective_status(
+        metadata: CandidatePublicationMetadata,
+        *_args: object,
+        **_kwargs: object,
+    ) -> str | None:
+        nonlocal raced_reads
+        if metadata.publication_key == corrupt.publication_key:
+            return "unreviewed"
+        if metadata.publication_key == raced.publication_key:
+            raced_reads += 1
+            return "unreviewed" if raced_reads == 1 else None
+        if metadata.publication_key == unreviewed.publication_key:
+            return "unreviewed"
+        if metadata.publication_key == pending.publication_key:
+            return "pending"
+        return None
+
+    monkeypatch.setattr(publication_store, "list_finalized", list_pages)
+    monkeypatch.setattr(service, "_effective_review_status", effective_status)
+
+    rows = service.list_review_queue(_reviewer(), correlation_id=CORRELATION)
+
+    assert [row.publication_key for row in rows] == [
+        unreviewed.publication_key,
+        pending.publication_key,
+    ]
+    assert [row.review_status for row in rows] == ["unreviewed", "pending"]
+    assert raced_reads == 2
+    assert len(calls) == 2
+    assert calls[0] is None
+    assert calls[1] == first_page[-1].cursor
+
+
+def test_review_queue_stops_on_a_nonadvancing_duplicate_page(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    publication_store, _control_store, _control_service, service = _setup(tmp_path)
+    metadata = _publish(publication_store, "1", now=1_000_000)
+    calls = 0
+
+    def duplicate_page(*_args: object, **_kwargs: object) -> list[CandidatePublicationMetadata]:
+        nonlocal calls
+        calls += 1
+        return [metadata] * 100
+
+    monkeypatch.setattr(publication_store, "list_finalized", duplicate_page)
+    rows = service.list_review_queue(_reviewer(), correlation_id=CORRELATION)
+
+    assert [row.publication_key for row in rows] == [metadata.publication_key]
+    assert calls == 2
 
 
 def test_review_queue_suppresses_metadata_mismatch_corruption_and_post_read_race(

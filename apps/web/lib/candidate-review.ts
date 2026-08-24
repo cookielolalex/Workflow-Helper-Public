@@ -16,7 +16,7 @@ export type CandidateReviewRow = {
   readonly command_sequence: readonly string[];
   readonly occurrence_count: number;
   readonly provenance: "observed";
-  readonly approval_status: "unreviewed";
+  readonly review_status: "unreviewed" | "pending";
   readonly finalized_at: string;
 };
 
@@ -36,7 +36,7 @@ const ROUTE_ITEM_KEYS = [
   "command_sequence",
   "occurrence_count",
   "provenance",
-  "approval_status",
+  "review_status",
   "finalized_at_us",
 ] as const;
 const LOADING_KEYS = ["status"] as const;
@@ -156,7 +156,7 @@ function parseRouteResponse(value: unknown): CandidateReviewView {
       !Number.isSafeInteger(item.occurrence_count) ||
       item.occurrence_count !== item.command_sequence.length ||
       item.provenance !== "observed" ||
-      item.approval_status !== "unreviewed"
+      (item.review_status !== "unreviewed" && item.review_status !== "pending")
     ) {
       return unavailable();
     }
@@ -171,7 +171,7 @@ function parseRouteResponse(value: unknown): CandidateReviewView {
       command_sequence: [...item.command_sequence],
       occurrence_count: item.occurrence_count,
       provenance: "observed",
-      approval_status: "unreviewed",
+      review_status: item.review_status,
       finalized_at: finalizedAt,
     });
   }

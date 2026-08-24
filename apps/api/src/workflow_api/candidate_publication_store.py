@@ -730,6 +730,52 @@ class SQLiteCandidatePublicationStore:
     read_bytes = read_finalized_bytes
     read_finalized = read_finalized_bytes
 
+    def list_finalized(
+        self,
+        scope: TenantWorkspaceScope,
+        limit: int = 100,
+        cursor: CandidatePublicationCursor | str | tuple[int, str] | Mapping[str, Any] | None = None,
+    ) -> list[CandidatePublicationMetadata]:
+        """List bounded verified finalized rows without interpreting review state."""
+
+        scope = _checked_scope(scope)
+        _require_limit(limit)
+        scan_cursor = _coerce_cursor(cursor)
+        with self._connection() as connection:
+            records: list[CandidatePublicationMetadata] = []
+            while len(records) < limit:
+                params: list[Any] = [scope.tenant_id, scope.workspace_id]
+                sql = """SELECT * FROM candidate_publications
+                         WHERE tenant_id = ? AND workspace_id = ? AND state = 'finalized'"""
+                if scan_cursor is not None:
+                    sql += " AND (finalized_at_us > ? OR (finalized_at_us = ? AND publication_key > ?))"
+                    params.extend(
+                        [
+                            scan_cursor.finalized_at_us,
+                            scan_cursor.finalized_at_us,
+                            scan_cursor.publication_key,
+                        ]
+                    )
+                sql += " ORDER BY finalized_at_us ASC, publication_key ASC LIMIT ?"
+                params.append(DISCOVERY_SCAN_BATCH)
+                rows = connection.execute(sql, params).fetchall()
+                if not rows:
+                    break
+                for row in rows:
+                    scan_cursor = CandidatePublicationCursor(
+                        row["finalized_at_us"], row["publication_key"]
+                    )
+                    try:
+                        verified = self._verified_record_from_row(connection, row, scope)
+                        records.append(verified.without_bytes())
+                        if len(records) == limit:
+                            break
+                    except CandidatePublicationError:
+                        continue
+                if len(rows) < DISCOVERY_SCAN_BATCH or len(records) == limit:
+                    break
+            return records
+
     def list_finalized_unreviewed(
         self,
         scope: TenantWorkspaceScope,

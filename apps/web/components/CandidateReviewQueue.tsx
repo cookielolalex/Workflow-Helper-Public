@@ -52,7 +52,7 @@ export function CandidateReviewQueue({ view }: CandidateReviewQueueProps) {
                     <th scope="row">Candidate {row.ordinal}</th>
                     <td>{row.command_sequence.join(" → ")}</td>
                     <td>{row.occurrence_count}</td>
-                    <td>{row.provenance} / {row.approval_status}</td>
+                    <td>{row.provenance} / {row.review_status}</td>
                     <td>
                       <time dateTime={row.finalized_at}>{row.finalized_at}</time>
                     </td>

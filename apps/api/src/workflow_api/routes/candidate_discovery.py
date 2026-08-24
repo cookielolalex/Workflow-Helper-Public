@@ -129,7 +129,7 @@ class CandidateReviewQueueItem(StrictModel):
     command_sequence: tuple[Annotated[str, Field(min_length=1, max_length=128)], ...]
     occurrence_count: Annotated[int, Field(ge=2, le=64)]
     provenance: Literal["observed"]
-    approval_status: Literal["unreviewed"]
+    review_status: Literal["unreviewed", "pending"]
     finalized_at_us: Annotated[int, Field(gt=0)]
 
     @classmethod
@@ -145,7 +145,7 @@ class CandidateReviewQueueItem(StrictModel):
                 command_sequence=value.command_sequence,
                 occurrence_count=value.occurrence_count,
                 provenance=value.provenance,
-                approval_status=value.approval_status,
+                review_status=value.review_status,
                 finalized_at_us=value.finalized_at_us,
             )
         except (AttributeError, TypeError, ValueError, ValidationError) as exc:

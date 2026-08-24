@@ -40,14 +40,14 @@ function configure() {
   process.env.NEXT_PUBLIC_API_BASE_URL = "https://must-not-be-used.invalid";
 }
 
-function item() {
+function item(reviewStatus = "unreviewed") {
   return {
     publication_key: PUBLICATION_KEY,
     review_target_id: REVIEW_TARGET,
     command_sequence: ["LINE", "TRIM", "LINE", "TRIM"],
     occurrence_count: 4,
     provenance: "observed",
-    approval_status: "unreviewed",
+    review_status: reviewStatus,
     finalized_at_us: 1_000_000,
   };
 }
@@ -156,7 +156,7 @@ test("loads one redacted row through the existing synchronous GET validator", as
         command_sequence: ["LINE", "TRIM", "LINE", "TRIM"],
         occurrence_count: 4,
         provenance: "observed",
-        approval_status: "unreviewed",
+        review_status: "unreviewed",
         finalized_at: "1970-01-01T00:00:01.000Z",
       },
     ],
@@ -177,51 +177,66 @@ test("loads one redacted row through the existing synchronous GET validator", as
   assert.equal(JSON.stringify(view).includes(REVIEWER_PROOF), false);
 });
 
-test("re-fetches and binds the ordinal server-side before validated POST", async () => {
+test("each legal effective-state action re-fetches and posts exactly once", async () => {
   configure();
-  const calls = [];
-  const fetcher = async (url, init) => {
-    calls.push({ url, init });
-    if (calls.length === 1) {
-      return jsonResponse(200, { items: [item()], count: 1 });
-    }
-    return jsonResponse(200, { status: "approved" });
-  };
-
-  const result = await submitCandidateReviewAction(1, "approve", fetcher);
-
-  assert.equal(result, "success");
-  assert.equal(calls.length, 2);
-  assert.equal(calls[1].init.method, "POST");
-  assert.equal(calls[1].init.redirect, "error");
-  assert.match(calls[1].url, /candidate-publication%3A1\.0%3A/);
-  const body = JSON.parse(calls[1].init.body);
-  assert.equal(body.review_target_id, REVIEW_TARGET);
-  assert.equal(body.status, "approved");
-  assert.equal(body.correlation_id, "web-candidate-action");
-  assert.match(body.idempotency_key, /^web-dev-[a-f0-9]{64}$/);
-  assert.equal(calls[1].init.headers.get("origin"), "https://review.synthetic.example");
-  assert.equal(calls[1].init.headers.get("x-csrf-token"), REVIEWER_CSRF);
-  assert.equal(JSON.stringify(result).includes(PUBLICATION_KEY), false);
+  for (const [reviewStatus, action, destination] of [
+    ["unreviewed", "approve", "approved"],
+    ["unreviewed", "start_review", "pending"],
+    ["pending", "approve", "approved"],
+    ["pending", "reject", "rejected"],
+    ["pending", "needs_changes", "needs_changes"],
+  ]) {
+    const calls = [];
+    const fetcher = async (url, init) => {
+      calls.push({ url, init });
+      return calls.length === 1
+        ? jsonResponse(200, { items: [item(reviewStatus)], count: 1 })
+        : jsonResponse(200, { status: destination });
+    };
+    assert.equal(await submitCandidateReviewAction(1, action, fetcher), "success");
+    assert.equal(calls.length, 2);
+    assert.equal(calls[1].init.method, "POST");
+    assert.equal(calls[1].init.redirect, "error");
+    assert.match(calls[1].url, /candidate-publication%3A1\.0%3A/);
+    const body = JSON.parse(calls[1].init.body);
+    assert.equal(body.review_target_id, REVIEW_TARGET);
+    assert.equal(body.status, destination);
+    assert.equal(body.correlation_id, "web-candidate-action");
+    assert.match(body.idempotency_key, /^web-dev-[a-f0-9]{64}$/);
+    assert.equal(calls[1].init.headers.get("origin"), "https://review.synthetic.example");
+    assert.equal(calls[1].init.headers.get("x-csrf-token"), REVIEWER_CSRF);
+  }
 });
 
-test("reject and needs_changes submissions fail before any fetch", async () => {
+test("illegal effective-state transitions fail before the review POST", async () => {
+  configure();
+  for (const [reviewStatus, action] of [
+    ["unreviewed", "reject"],
+    ["unreviewed", "needs_changes"],
+    ["pending", "start_review"],
+  ]) {
+    let calls = 0;
+    const fetcher = async () => {
+      calls += 1;
+      return jsonResponse(200, { items: [item(reviewStatus)], count: 1 });
+    };
+    assert.equal(await submitCandidateReviewAction(1, action, fetcher), "unavailable");
+    assert.equal(calls, 1);
+  }
+});
+
+test("a control-store race remains a generic conflict after one POST", async () => {
   configure();
   let calls = 0;
   const fetcher = async () => {
     calls += 1;
-    throw new Error("invalid action reached fetch");
+    return calls === 1
+      ? jsonResponse(200, { items: [item("pending")], count: 1 })
+      : jsonResponse(409, { detail: "request conflicts with current state" });
   };
 
-  assert.equal(
-    await submitCandidateReviewAction(1, "reject", fetcher),
-    "unavailable",
-  );
-  assert.equal(
-    await submitCandidateReviewAction(1, "needs_changes", fetcher),
-    "unavailable",
-  );
-  assert.equal(calls, 0);
+  assert.equal(await submitCandidateReviewAction(1, "reject", fetcher), "conflict");
+  assert.equal(calls, 2);
 });
 
 test("malformed cached GET or POST responses fail closed without leaking details", async () => {
@@ -309,6 +324,12 @@ test("accepts only the exact same-origin two-field ordinal/action form", async (
     await parseCandidateReviewActionRequest(actionRequest("ordinal=1&action=approve")),
     { ordinal: 1, action: "approve" },
   );
+  for (const action of ["start_review", "reject", "needs_changes"]) {
+    assert.deepEqual(
+      await parseCandidateReviewActionRequest(actionRequest(`ordinal=1&action=${action}`)),
+      { ordinal: 1, action },
+    );
+  }
   assert.deepEqual(
     await parseCandidateReviewActionRequest(actionRequest("ordinal=100&action=approve")),
     { ordinal: 100, action: "approve" },
@@ -344,8 +365,7 @@ test("accepts only the exact same-origin two-field ordinal/action form", async (
     actionRequest("action=approve&ordinal=1"),
     actionRequest("ordinal=01&action=approve"),
     actionRequest("ordinal=1&action=approved"),
-    actionRequest("ordinal=1&action=reject"),
-    actionRequest("ordinal=1&action=needs_changes"),
+    actionRequest("ordinal=1&action=pending"),
     actionRequest("ordinal=1&action=approve&extra=x"),
     actionRequest("ordinal=candidate-publication%3A1.0%3Araw&action=approve"),
     actionRequest("ordinal=1&action=approve", { "content-type": "application/json" }),
@@ -363,14 +383,16 @@ test("accepts only the exact same-origin two-field ordinal/action form", async (
   }
 });
 
-test("live review page exposes only the approve action", () => {
+test("live review page exposes actions only for their effective state", () => {
   const source = readFileSync(
     new URL("../app/candidate-review/page.tsx", import.meta.url),
     "utf-8",
   );
   assert.match(source, /name="action" value="approve"/);
-  assert.doesNotMatch(source, /name="action" value="(?:reject|needs_changes)"/);
-  assert.doesNotMatch(source, />\s*Reject\s*</);
+  assert.match(source, /name="action" value="start_review"/);
+  assert.match(source, /name="action" value="reject"/);
+  assert.match(source, /name="action" value="needs_changes"/);
+  assert.match(source, /row\.review_status === "unreviewed"/);
 });
 
 test("returns one fixed generic bodyless 303", async () => {

@@ -135,13 +135,13 @@ try:
                     "command_sequence",
                     "occurrence_count",
                     "provenance",
-                    "approval_status",
+                    "review_status",
                     "finalized_at_us",
                 }
                 and item.get("command_sequence") == ["LINE", "TRIM", "LINE", "TRIM"]
                 and item.get("occurrence_count") == 4
                 and item.get("provenance") == "observed"
-                and item.get("approval_status") == "unreviewed"
+                and item.get("review_status") == "unreviewed"
             )
             if valid:
                 schema = "valid"
@@ -348,6 +348,7 @@ required = (
     "4",
     "observed / unreviewed",
     "Approve",
+    "Start review",
 )
 if any(value not in visible for value in required):
     raise SystemExit(
@@ -380,7 +381,7 @@ if re.search(r"\b[a-f0-9]{64}\b", html, re.IGNORECASE):
     raise SystemExit("candidate review page exposed a digest")
 PY
 
-action_body='ordinal=1&action=approve'
+action_body='ordinal=1&action=start_review'
 status="$({
   curl --silent --show-error --max-time 10 --max-redirs 0 \
     --dump-header "$smoke_dir/action.headers" \
@@ -407,6 +408,163 @@ locations = [
 ]
 if locations != ["/candidate-review"]:
     raise SystemExit("candidate review redirect was not exact")
+PY
+
+status="$({
+  curl --silent --show-error --max-time 10 \
+    --output "$smoke_dir/pending.html" --write-out '%{http_code}' \
+    "$web_base/candidate-review"
+} || true)"
+if [[ "$status" != "200" ]]; then
+  echo "Pending candidate page returned HTTP $status." >&2
+  exit 1
+fi
+PENDING_HTML="$smoke_dir/pending.html" \
+CAPTURE_PROOF="$capture_proof" \
+WORKER_PROOF="$worker_proof" \
+REVIEWER_PROOF="$reviewer_proof" \
+REVIEWER_SESSION="$reviewer_session" \
+REVIEWER_CSRF="$reviewer_csrf" \
+python3 - <<'PY'
+import os
+import re
+from html import unescape
+from html.parser import HTMLParser
+from pathlib import Path
+
+
+class VisibleTextParser(HTMLParser):
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.hidden_depth = 0
+        self.parts = []
+
+    def handle_starttag(self, tag, attrs):
+        if tag.casefold() in {"script", "style"}:
+            self.hidden_depth += 1
+
+    def handle_endtag(self, tag):
+        if tag.casefold() in {"script", "style"} and self.hidden_depth:
+            self.hidden_depth -= 1
+
+    def handle_data(self, data):
+        if not self.hidden_depth:
+            self.parts.append(data)
+
+
+parser = VisibleTextParser()
+html = Path(os.environ["PENDING_HTML"]).read_text(encoding="utf-8")
+parser.feed(html)
+parser.close()
+visible = " ".join(unescape(" ".join(parser.parts)).split())
+for value in (
+    "Candidate 1",
+    "observed / pending",
+    "Approve",
+    "Reject",
+    "Needs changes",
+):
+    if value not in visible:
+        raise SystemExit("pending candidate controls were incomplete")
+if "Start review" in visible:
+    raise SystemExit("pending candidate exposed an illegal repeated start action")
+for value in (
+    os.environ["CAPTURE_PROOF"],
+    os.environ["WORKER_PROOF"],
+    os.environ["REVIEWER_PROOF"],
+    os.environ["REVIEWER_SESSION"],
+    os.environ["REVIEWER_CSRF"],
+    "publication_key",
+    "review_target_id",
+):
+    if value in html:
+        raise SystemExit("pending candidate page exposed private server evidence")
+if re.search(r"candidate-(?:publication|skill):", html, re.IGNORECASE):
+    raise SystemExit("pending candidate page exposed a raw candidate identifier")
+if re.search(
+    r"\b[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\b",
+    html,
+    re.IGNORECASE,
+):
+    raise SystemExit("pending candidate page exposed a UUID")
+if re.search(r"\b[a-f0-9]{64}\b", html, re.IGNORECASE):
+    raise SystemExit("pending candidate page exposed a digest")
+PY
+
+# This synchronous no-port harness is the quiescent durability window.  It
+# must exit successfully before the live web/API is allowed to mutate again.
+if ! "${compose[@]}" run --rm --no-deps -T seed python - \
+  >"$smoke_dir/independent-pending-verify.log" <<'PY'
+import runpy
+
+from workflow_api import dev_server
+
+seed = runpy.run_path("/workspace/dev-runtime-seed.py")
+driver = seed["_ASGIDriver"](dev_server.open_existing_app())
+response = driver.request(
+    "GET",
+    "/v1/control/candidate-publications/review-queue",
+    headers=seed["_reviewer_headers"](),
+)
+payload = response.json()
+if (
+    response.status != 200
+    or type(payload) is not dict
+    or set(payload) != {"items", "count"}
+    or payload.get("count") != 1
+    or type(payload.get("items")) is not list
+    or len(payload["items"]) != 1
+    or type(payload["items"][0]) is not dict
+    or set(payload["items"][0]) != {
+        "publication_key",
+        "review_target_id",
+        "command_sequence",
+        "occurrence_count",
+        "provenance",
+        "review_status",
+        "finalized_at_us",
+    }
+    or payload["items"][0].get("review_status") != "pending"
+):
+    raise SystemExit("independent pending verification failed")
+print("synthetic pending candidate durability verified")
+PY
+then
+  echo "Independent pending candidate durability verification failed." >&2
+  exit 1
+fi
+if [[ "$(cat "$smoke_dir/independent-pending-verify.log")" != "synthetic pending candidate durability verified" ]]; then
+  echo "Independent pending candidate durability verification was not exact." >&2
+  exit 1
+fi
+
+action_body='ordinal=1&action=needs_changes'
+status="$({
+  curl --silent --show-error --max-time 10 --max-redirs 0 \
+    --dump-header "$smoke_dir/terminal.headers" \
+    --output "$smoke_dir/terminal.body" --write-out '%{http_code}' \
+    --request POST "$web_base/candidate-review/action" \
+    --header "Host: 127.0.0.1:$web_port" \
+    --header "Origin: http://127.0.0.1:$web_port" \
+    --header 'Content-Type: application/x-www-form-urlencoded' \
+    --data-binary "$action_body"
+} || true)"
+if [[ "$status" != "303" || -s "$smoke_dir/terminal.body" ]]; then
+  echo "Terminal review action did not return the fixed bodyless 303." >&2
+  exit 1
+fi
+TERMINAL_HEADERS="$smoke_dir/terminal.headers" python3 - <<'PY'
+import os
+from pathlib import Path
+
+headers = Path(os.environ["TERMINAL_HEADERS"]).read_text(encoding="iso-8859-1")
+locations = [
+    line.split(":", 1)[1].strip()
+    for line in headers.splitlines()
+    if line.lower().startswith("location:")
+]
+if locations != ["/candidate-review"]:
+    raise SystemExit("terminal review redirect was not exact")
 PY
 
 status="$({
@@ -475,4 +633,4 @@ if [[ "$(cat "$smoke_dir/independent-verify.log")" != "synthetic candidate durab
   exit 1
 fi
 
-echo "Synthetic dev-runtime smoke passed: v2 seed, redacted queue, durable approval, and empty reopen."
+echo "Synthetic dev-runtime smoke passed: v2 seed, independent pending bundle reopen, durable terminal decision, and empty reopen."

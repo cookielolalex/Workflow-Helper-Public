@@ -307,6 +307,64 @@ def test_review_post_success_replay_and_lifecycle_idempotency_conflicts(
     assert events[0].status == "approved"
 
 
+@pytest.mark.parametrize("terminal_status", ("rejected", "needs_changes"))
+def test_review_post_supports_pending_terminal_transitions(
+    service: CandidateDiscoveryService,
+    monkeypatch: pytest.MonkeyPatch,
+    terminal_status: str,
+) -> None:
+    control_service = service._control_service
+    publication_service = CandidatePublicationService(
+        service._publication_store,
+        control_service,
+    )
+    metadata = _metadata()
+    monkeypatch.setattr(
+        service._publication_store,
+        "get_finalized",
+        lambda *_args, **_kwargs: metadata,
+    )
+    application = FastAPI()
+    application.include_router(router)
+    application.dependency_overrides[get_authenticated_principal] = _principal
+    application.dependency_overrides[get_control_service] = lambda: control_service
+    application.dependency_overrides[get_candidate_publication_service] = (
+        lambda: publication_service
+    )
+    path = f"/v1/control/candidate-publications/{metadata.publication_key}/review"
+    common = {
+        "review_target_id": metadata.review_target_id,
+        "correlation_id": "corr-pending-terminal",
+    }
+    pending = TestClient(application).post(
+        path,
+        json={
+            **common,
+            "idempotency_key": f"idem-pending-{terminal_status}",
+            "status": "pending",
+        },
+    )
+    terminal = TestClient(application).post(
+        path,
+        json={
+            **common,
+            "idempotency_key": f"idem-terminal-{terminal_status}",
+            "status": terminal_status,
+        },
+    )
+
+    assert pending.status_code == 200, pending.text
+    assert pending.json() == {"status": "pending"}
+    assert terminal.status_code == 200, terminal.text
+    assert terminal.json() == {"status": terminal_status}
+    events = control_service._store.list_candidate_review_events(
+        _qualify(SCOPE, "review_target", metadata.review_target_id),
+        after_sequence=0,
+        limit=10,
+    )
+    assert [event.status for event in events] == ["pending", terminal_status]
+
+
 def test_review_post_reason_omission_replays_but_explicit_null_conflicts(
     service: CandidateDiscoveryService,
     monkeypatch: pytest.MonkeyPatch,
@@ -549,7 +607,7 @@ def test_review_queue_route_is_static_exact_and_display_safe(
         command_sequence=("LINE", "TRIM", "LINE", "TRIM"),
         occurrence_count=4,
         provenance="observed",
-        approval_status="unreviewed",
+        review_status="pending",
         finalized_at_us=metadata.finalized_at_us,
     )
     calls: list[tuple[AuthenticatedPrincipal, str]] = []
@@ -577,7 +635,7 @@ def test_review_queue_route_is_static_exact_and_display_safe(
                 "command_sequence": ["LINE", "TRIM", "LINE", "TRIM"],
                 "occurrence_count": 4,
                 "provenance": "observed",
-                "approval_status": "unreviewed",
+                "review_status": "pending",
                 "finalized_at_us": metadata.finalized_at_us,
             }
         ],
@@ -589,7 +647,7 @@ def test_review_queue_route_is_static_exact_and_display_safe(
         "command_sequence",
         "occurrence_count",
         "provenance",
-        "approval_status",
+        "review_status",
         "finalized_at_us",
     }
     route_paths = [route.path for route in router.routes]

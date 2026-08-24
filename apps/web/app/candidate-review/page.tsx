@@ -12,7 +12,7 @@ export default async function CandidateReviewPage() {
         <div>
           <p className="eyebrow">SYNTHETIC REVIEW</p>
           <h1>Candidate review queue</h1>
-          <p>Only redacted synthetic evidence and the bounded approval action are shown.</p>
+          <p>Only redacted synthetic evidence and legal bounded review transitions are shown.</p>
         </div>
         <aside className="privacy-note">
           <strong>Server-side authority boundary</strong>
@@ -49,6 +49,20 @@ export default async function CandidateReviewPage() {
                         <button type="submit" name="action" value="approve">
                           Approve
                         </button>
+                        {row.review_status === "unreviewed" ? (
+                          <button type="submit" name="action" value="start_review">
+                            Start review
+                          </button>
+                        ) : (
+                          <>
+                            <button type="submit" name="action" value="reject">
+                              Reject
+                            </button>
+                            <button type="submit" name="action" value="needs_changes">
+                              Needs changes
+                            </button>
+                          </>
+                        )}
                       </form>
                     </td>
                   </tr>
