@@ -31,7 +31,12 @@ const FORBIDDEN_PROOF_VALUES = new Set([
 
 type CachedResponse = Readonly<{ status: number; body: unknown }>;
 type ReviewAction = "approve" | "start_review" | "reject" | "needs_changes";
-type ParsedAction = Readonly<{ ordinal: number; action: ReviewAction }>;
+type ReviewReasonCode = "sequence" | "evidence";
+type ParsedAction = Readonly<{
+  ordinal: number;
+  action: ReviewAction;
+  reason_code?: ReviewReasonCode;
+}>;
 type ServerConfig = Readonly<{
   apiBase: string;
   reviewerProof: string;
@@ -312,13 +317,16 @@ function rawItem(value: unknown, ordinal: number): Record<string, unknown> | nul
 export async function submitCandidateReviewAction(
   ordinal: number,
   action: ReviewAction,
+  reasonCode: ReviewReasonCode | undefined,
   fetcher: typeof fetch = fetch,
 ): Promise<CandidateReviewActionResult> {
   if (
     !["approve", "start_review", "reject", "needs_changes"].includes(action) ||
     !Number.isSafeInteger(ordinal) ||
     ordinal < 1 ||
-    ordinal > 100
+    ordinal > 100 ||
+    ((action === "reject" || action === "needs_changes") !==
+      (reasonCode === "sequence" || reasonCode === "evidence"))
   ) {
     return "unavailable";
   }
@@ -348,13 +356,21 @@ export async function submitCandidateReviewAction(
     needs_changes: "needs_changes",
   }[action];
   const identity = createHash("sha256")
-    .update(`workflow-helper\0dev-review\0${publicationKey}\0${status}`)
+    .update(`workflow-helper\0dev-review\0${publicationKey}\0${status}\0${reasonCode ?? "none"}`)
     .digest("hex");
+  const fixedReason = reasonCode === undefined ? undefined : {
+    sequence: "Synthetic command sequence requires correction.",
+    evidence: "Synthetic observed evidence is insufficient.",
+  }[reasonCode];
   const request = Object.freeze({
     review_target_id: reviewTarget,
     correlation_id: "web-candidate-action",
     idempotency_key: `web-dev-${identity}`,
     status,
+    ...(reasonCode === undefined ? {} : {
+      reason: fixedReason,
+      evidence: { reason_code: reasonCode },
+    }),
   });
   const descriptor = buildCandidateReviewPostRequest(publicationKey, request);
   if (descriptor === null) return "unavailable";
@@ -410,7 +426,7 @@ async function boundedActionBody(request: Request, expected: number): Promise<st
   }
 }
 
-/** Validate the same-origin two-field browser form without accepting authority. */
+/** Validate one exact same-origin browser form without accepting authority. */
 export async function parseCandidateReviewActionRequest(
   request: Request,
 ): Promise<ParsedAction | null> {
@@ -440,11 +456,19 @@ export async function parseCandidateReviewActionRequest(
   if (body === null || body.includes("candidate-publication") || body.includes("candidate-skill")) {
     return null;
   }
-  const match = /^ordinal=((?:[1-9][0-9]?|100))&action=(approve|start_review|reject|needs_changes)$/.exec(body);
-  if (match === null) return null;
-  const ordinal = Number(match[1]);
+  const match = /^ordinal=((?:[1-9][0-9]?|100))&action=(approve|start_review)$/.exec(body);
+  const terminal = /^ordinal=((?:[1-9][0-9]?|100))&reason_code=(sequence|evidence)&action=(reject|needs_changes)$/.exec(body);
+  if (match === null && terminal === null) return null;
+  const ordinal = Number((match ?? terminal!)[1]);
   if (ordinal > 100) return null;
-  return Object.freeze({ ordinal, action: match[2] as ReviewAction });
+  if (match !== null) {
+    return Object.freeze({ ordinal, action: match[2] as ReviewAction });
+  }
+  return Object.freeze({
+    ordinal,
+    action: terminal![3] as ReviewAction,
+    reason_code: terminal![2] as ReviewReasonCode,
+  });
 }
 
 export function candidateReviewRedirect(): Response {
