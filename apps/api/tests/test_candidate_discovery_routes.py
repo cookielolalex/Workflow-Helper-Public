@@ -10,6 +10,7 @@ from workflow_api.candidate_discovery_service import (
     CandidateDiscoveryService,
     CandidateDiscoveryUnavailableError,
     CandidateDiscoveryValidationError,
+    CandidateReviewOutcomeRecord,
     CandidateReviewQueueRecord,
 )
 from workflow_api.candidate_publication_service import CandidatePublicationService
@@ -100,6 +101,10 @@ def test_main_app_keeps_dormant_route_unreachable() -> None:
         "/v1/control/candidate-publications/review-queue"
     )
     assert queue.status_code == 404
+    outcomes = TestClient(main_app).get(
+        "/v1/control/candidate-publications/review-outcomes"
+    )
+    assert outcomes.status_code == 404
 
 
 def test_default_service_dependency_fails_closed_without_a_fallback() -> None:
@@ -672,6 +677,94 @@ def test_review_queue_invalid_service_result_fails_closed(
         "/v1/control/candidate-publications/review-queue"
     )
 
+    assert response.status_code == 503
+    assert response.json() == {"detail": "candidate discovery unavailable"}
+
+
+def test_review_outcomes_route_is_static_exact_identifier_free_and_bounded(
+    isolated_app: FastAPI,
+    service: CandidateDiscoveryService,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    row = CandidateReviewOutcomeRecord(
+        command_sequence=("LINE", "TRIM", "LINE", "TRIM"),
+        occurrence_count=4,
+        provenance="observed",
+        review_status="needs_changes",
+        decided_at_us=2_000_000,
+    )
+    calls: list[tuple[AuthenticatedPrincipal, str]] = []
+
+    def outcomes(
+        principal: AuthenticatedPrincipal,
+        *,
+        correlation_id: str,
+    ) -> list[CandidateReviewOutcomeRecord]:
+        calls.append((principal, correlation_id))
+        return [row]
+
+    monkeypatch.setattr(service, "list_review_outcomes", outcomes)
+    response = TestClient(isolated_app).get(
+        "/v1/control/candidate-publications/review-outcomes"
+    )
+
+    assert response.status_code == 200, response.text
+    assert calls == [(_principal(), "candidate-review-outcomes")]
+    assert response.json() == {
+        "items": [
+            {
+                "command_sequence": ["LINE", "TRIM", "LINE", "TRIM"],
+                "occurrence_count": 4,
+                "provenance": "observed",
+                "review_status": "needs_changes",
+                "decided_at_us": 2_000_000,
+            }
+        ],
+        "count": 1,
+    }
+    forbidden = {
+        "publication_key",
+        "review_target_id",
+        "actor_id",
+        "reason",
+        "evidence",
+        "hash",
+        "artifact_ref",
+    }
+    assert forbidden.isdisjoint(response.json()["items"][0])
+    route_paths = [route.path for route in router.routes]
+    assert route_paths.index(
+        "/v1/control/candidate-publications/review-outcomes"
+    ) < route_paths.index(
+        "/v1/control/candidate-publications/{publication_key}/review"
+    )
+
+
+def test_review_outcomes_invalid_service_result_fails_closed(
+    isolated_app: FastAPI,
+    service: CandidateDiscoveryService,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(service, "list_review_outcomes", lambda *_args, **_kwargs: [object()])
+    response = TestClient(isolated_app).get(
+        "/v1/control/candidate-publications/review-outcomes"
+    )
+    assert response.status_code == 503
+    assert response.json() == {"detail": "candidate discovery unavailable"}
+
+
+def test_review_outcomes_authority_failure_is_generic(
+    isolated_app: FastAPI,
+    service: CandidateDiscoveryService,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def unavailable(*_args: object, **_kwargs: object) -> None:
+        raise CandidateDiscoveryUnavailableError("private authority path")
+
+    monkeypatch.setattr(service, "list_review_outcomes", unavailable)
+    response = TestClient(isolated_app).get(
+        "/v1/control/candidate-publications/review-outcomes"
+    )
     assert response.status_code == 503
     assert response.json() == {"detail": "candidate discovery unavailable"}
 

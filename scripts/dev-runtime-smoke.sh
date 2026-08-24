@@ -576,7 +576,13 @@ if [[ "$status" != "200" ]]; then
   echo "Reviewed candidate page returned HTTP $status." >&2
   exit 1
 fi
-EMPTY_HTML="$smoke_dir/empty.html" python3 - <<'PY'
+EMPTY_HTML="$smoke_dir/empty.html" \
+CAPTURE_PROOF="$capture_proof" \
+WORKER_PROOF="$worker_proof" \
+REVIEWER_PROOF="$reviewer_proof" \
+REVIEWER_SESSION="$reviewer_session" \
+REVIEWER_CSRF="$reviewer_csrf" \
+python3 - <<'PY'
 import os
 import re
 from html import unescape
@@ -611,8 +617,29 @@ def visible_text(value):
 
 
 html = Path(os.environ["EMPTY_HTML"]).read_text(encoding="utf-8")
-if "No candidates awaiting review." not in visible_text(html):
+visible = visible_text(html)
+for expected in (
+    "No candidates awaiting review.",
+    "Review outcomes",
+    "Outcome 1",
+    "LINE → TRIM → LINE → TRIM",
+    "needs_changes",
+):
+    if expected not in visible:
+        raise SystemExit("terminal outcome was not visible")
+if "Candidate 1" in visible:
     raise SystemExit("reviewed candidate remained visible")
+for value in (
+    os.environ["CAPTURE_PROOF"],
+    os.environ["WORKER_PROOF"],
+    os.environ["REVIEWER_PROOF"],
+    os.environ["REVIEWER_SESSION"],
+    os.environ["REVIEWER_CSRF"],
+    "publication_key",
+    "review_target_id",
+):
+    if value in html:
+        raise SystemExit("terminal outcome page exposed private server evidence")
 if re.search(r"candidate-(?:publication|skill):", html, re.IGNORECASE):
     raise SystemExit("empty candidate page exposed a raw candidate identifier")
 if re.search(
@@ -625,6 +652,55 @@ if re.search(r"\b[a-f0-9]{64}\b", html, re.IGNORECASE):
     raise SystemExit("empty candidate page exposed a digest")
 PY
 
+if ! "${compose[@]}" run --rm --no-deps -T seed python - \
+  >"$smoke_dir/independent-outcome-verify.log" <<'PY'
+import runpy
+
+from workflow_api import dev_server
+
+seed = runpy.run_path("/workspace/dev-runtime-seed.py")
+driver = seed["_ASGIDriver"](dev_server.open_existing_app())
+response = driver.request(
+    "GET",
+    "/v1/control/candidate-publications/review-outcomes",
+    headers=seed["_reviewer_headers"](),
+)
+payload = response.json()
+expected_item = {
+    "command_sequence",
+    "occurrence_count",
+    "provenance",
+    "review_status",
+    "decided_at_us",
+}
+if (
+    response.status != 200
+    or type(payload) is not dict
+    or set(payload) != {"items", "count"}
+    or payload.get("count") != 1
+    or type(payload.get("items")) is not list
+    or len(payload["items"]) != 1
+    or type(payload["items"][0]) is not dict
+    or set(payload["items"][0]) != expected_item
+    or payload["items"][0].get("command_sequence") != ["LINE", "TRIM", "LINE", "TRIM"]
+    or payload["items"][0].get("occurrence_count") != 4
+    or payload["items"][0].get("provenance") != "observed"
+    or payload["items"][0].get("review_status") != "needs_changes"
+    or type(payload["items"][0].get("decided_at_us")) is not int
+    or payload["items"][0]["decided_at_us"] <= 0
+):
+    raise SystemExit("independent terminal outcome verification failed")
+print("synthetic terminal outcome durability verified")
+PY
+then
+  echo "Independent terminal outcome durability verification failed." >&2
+  exit 1
+fi
+if [[ "$(cat "$smoke_dir/independent-outcome-verify.log")" != "synthetic terminal outcome durability verified" ]]; then
+  echo "Independent terminal outcome durability verification was not exact." >&2
+  exit 1
+fi
+
 "${compose[@]}" run --rm --no-deps seed \
   python /workspace/dev-runtime-seed.py --verify-empty \
   >"$smoke_dir/independent-verify.log"
@@ -633,4 +709,4 @@ if [[ "$(cat "$smoke_dir/independent-verify.log")" != "synthetic candidate durab
   exit 1
 fi
 
-echo "Synthetic dev-runtime smoke passed: v2 seed, independent pending bundle reopen, durable terminal decision, and empty reopen."
+echo "Synthetic dev-runtime smoke passed: v2 seed, independent pending reopen, durable terminal outcome, and empty active queue reopen."

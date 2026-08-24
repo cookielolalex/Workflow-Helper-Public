@@ -5,6 +5,7 @@ import test from "node:test";
 import {
   MAX_CANDIDATE_REVIEW_COMMANDS,
   MAX_CANDIDATE_REVIEW_ITEMS,
+  toCandidateReviewOutcomesView,
   toCandidateReviewView,
 } from "./candidate-review.ts";
 
@@ -77,6 +78,40 @@ test("closed view exposes exact informed evidence and no server binding", () => 
   assert.equal(pending.status, "populated");
   if (pending.status === "populated") {
     assert.equal(pending.rows[0].review_status, "pending");
+  }
+});
+
+test("terminal outcome projection is exact, bounded, and identifier free", () => {
+  const response = {
+    items: [{
+      command_sequence: ["LINE", "TRIM", "LINE", "TRIM"],
+      occurrence_count: 4,
+      provenance: "observed",
+      review_status: "needs_changes",
+      decided_at_us: 2_000_000,
+    }],
+    count: 1,
+  };
+  const view = toCandidateReviewOutcomesView(available(response));
+  assert.equal(view.status, "populated");
+  assert.deepEqual(view.status === "populated" ? view.rows[0] : null, {
+    ordinal: 1,
+    command_sequence: ["LINE", "TRIM", "LINE", "TRIM"],
+    occurrence_count: 4,
+    provenance: "observed",
+    review_status: "needs_changes",
+    decided_at: "1970-01-01T00:00:02.000Z",
+  });
+  for (const malformed of [
+    { ...response, extra: true },
+    { items: [{ ...response.items[0], publication_key: PUBLICATION_KEY }], count: 1 },
+    { items: [{ ...response.items[0], review_status: "pending" }], count: 1 },
+    { items: [{ ...response.items[0], occurrence_count: 3 }], count: 1 },
+    { items: [{ ...response.items[0], decided_at_us: "2" }], count: 1 },
+  ]) {
+    assert.deepEqual(toCandidateReviewOutcomesView(available(malformed)), {
+      status: "unavailable",
+    });
   }
 });
 

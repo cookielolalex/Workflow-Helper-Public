@@ -1,10 +1,16 @@
 import { createHash } from "node:crypto";
 
 // @ts-ignore Focused Node tests require the explicit source extension.
-import { buildCandidateReviewRequest, readCandidateReview, type CandidateReviewRequestInput } from "./candidate-review-client.ts";
+import {
+  buildCandidateReviewOutcomesRequest,
+  buildCandidateReviewRequest,
+  readCandidateReview,
+  readCandidateReviewOutcomes,
+  type CandidateReviewRequestInput,
+} from "./candidate-review-client.ts";
 // @ts-ignore Focused Node tests require the explicit source extension.
 import { buildCandidateReviewPostRequest, postCandidateReview } from "./candidate-review-post-client.ts";
-import type { CandidateReviewView } from "./candidate-review";
+import type { CandidateReviewOutcomesView, CandidateReviewView } from "./candidate-review";
 
 const MAX_JSON_BYTES = 262_144;
 const MAX_ACTION_BYTES = 64;
@@ -280,6 +286,22 @@ export async function loadCandidateReviewQueue(
   if (config === null) return { status: "unavailable" };
   const listed = await cachedList(config, "web-candidate-review", fetcher);
   return listed?.view ?? { status: "unavailable" };
+}
+
+/** Return only the redacted terminal-outcome union to the server component. */
+export async function loadCandidateReviewOutcomes(
+  fetcher: typeof fetch = fetch,
+): Promise<CandidateReviewOutcomesView> {
+  const config = serverConfig();
+  if (config === null) return { status: "unavailable" };
+  const descriptor = buildCandidateReviewOutcomesRequest();
+  const cached = await boundedJsonFetch(
+    fetcher,
+    `${config.apiBase}${descriptor.path}`,
+    { method: descriptor.method, headers: apiHeaders(config) },
+  );
+  if (cached === null) return { status: "unavailable" };
+  return readCandidateReviewOutcomes(() => cached);
 }
 
 function rawItem(value: unknown, ordinal: number): Record<string, unknown> | null {

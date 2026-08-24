@@ -15,6 +15,7 @@ from workflow_api.candidate_discovery_service import (
     CandidateDiscoveryService,
     CandidateDiscoveryUnavailableError,
     CandidateDiscoveryValidationError,
+    CandidateReviewOutcomeRecord,
     CandidateReviewQueueRecord,
 )
 from workflow_api.candidate_publication_service import (
@@ -34,7 +35,7 @@ from workflow_api.control_auth import (
 )
 from workflow_api.control_scope import TenantWorkspaceScope
 from workflow_api.control_service import ControlService
-from workflow_api.control_store import SQLiteControlStore
+from workflow_api.control_store import ControlStoreError, SQLiteControlStore
 from workflow_api.models import (
     ArtifactProvider,
     ArtifactRef,
@@ -344,6 +345,218 @@ def test_review_queue_includes_pending_and_suppresses_every_terminal_state(
 
     _transition(control_service, metadata, "needs_changes", suffix="terminal")
     assert service.list_review_queue(_reviewer(), correlation_id=CORRELATION) == []
+
+
+@pytest.mark.parametrize("status", ["approved", "rejected", "needs_changes"])
+def test_review_outcomes_return_only_verified_terminal_display_evidence(
+    tmp_path: Path,
+    status: str,
+) -> None:
+    publication_store, _control_store, control_service, service = _setup(tmp_path)
+    metadata = _publish(publication_store, "1", now=1_000_000)
+    if status in {"rejected", "needs_changes"}:
+        _transition(control_service, metadata, "pending", suffix=f"pending-{status}")
+    _transition(control_service, metadata, status, suffix=status)
+
+    rows = service.list_review_outcomes(_reviewer(), correlation_id=CORRELATION)
+
+    assert rows == [
+        CandidateReviewOutcomeRecord(
+            command_sequence=("LINE", "LINE"),
+            occurrence_count=2,
+            provenance="observed",
+            review_status=status,
+            decided_at_us=rows[0].decided_at_us,
+        )
+    ]
+    assert rows[0].decided_at_us > 0
+    assert set(rows[0].__slots__) == {
+        "command_sequence",
+        "occurrence_count",
+        "provenance",
+        "review_status",
+        "decided_at_us",
+    }
+
+
+def test_review_outcomes_suppress_active_corrupt_and_post_correlation_race(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    publication_store, _control_store, control_service, service = _setup(tmp_path)
+    metadata = _publish(publication_store, "1", now=1_000_000)
+    assert service.list_review_outcomes(_reviewer(), correlation_id=CORRELATION) == []
+    _transition(control_service, metadata, "pending", suffix="pending")
+    assert service.list_review_outcomes(_reviewer(), correlation_id=CORRELATION) == []
+    _transition(control_service, metadata, "needs_changes", suffix="terminal")
+    record = publication_store.get_finalized(SCOPE, metadata.publication_key)
+
+    monkeypatch.setattr(
+        publication_store,
+        "get_finalized",
+        lambda *_args, **_kwargs: replace(record, derivation_evidence_jcs=b"{}"),
+    )
+    assert service.list_review_outcomes(_reviewer(), correlation_id=CORRELATION) == []
+    monkeypatch.setattr(publication_store, "get_finalized", lambda *_args, **_kwargs: record)
+
+    original = service._review_projection
+    reads = 0
+
+    def raced_projection(*args: object, **kwargs: object):
+        nonlocal reads
+        reads += 1
+        projection = original(*args, **kwargs)
+        return projection if reads == 1 else replace(projection, version=projection.version + 1)
+
+    monkeypatch.setattr(service, "_review_projection", raced_projection)
+    assert service.list_review_outcomes(_reviewer(), correlation_id=CORRELATION) == []
+    assert reads == 2
+
+
+def test_review_outcomes_page_past_full_active_and_corrupt_page(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    publication_store, _control_store, control_service, service = _setup(tmp_path)
+    terminal = _publish(publication_store, "1", now=1_000_000)
+    _transition(control_service, terminal, "pending", suffix="page-pending")
+    _transition(control_service, terminal, "needs_changes", suffix="page-terminal")
+    record = publication_store.get_finalized(SCOPE, terminal.publication_key)
+    projection = control_service.read_candidate_review(
+        _reviewer(), review_target_id=terminal.review_target_id, correlation_id=CORRELATION
+    )
+    assert projection is not None
+    active = [
+        replace(
+            terminal,
+            publication_key=f"candidate-publication:1.0:{UUID(int=index + 100, version=4)}",
+            finalized_at_us=index + 1,
+        )
+        for index in range(99)
+    ]
+    corrupt = replace(
+        terminal,
+        publication_key=f"candidate-publication:1.0:{UUID(int=999, version=4)}",
+        finalized_at_us=100,
+    )
+    calls: list[CandidatePublicationCursor | None] = []
+
+    def pages(
+        _scope: TenantWorkspaceScope,
+        *,
+        limit: int,
+        cursor: CandidatePublicationCursor | None,
+    ) -> list[CandidatePublicationMetadata]:
+        assert limit == 100
+        calls.append(cursor)
+        return [*active, corrupt] if cursor is None else [terminal]
+
+    def projections(metadata: CandidatePublicationMetadata, *_args: object, **_kwargs: object):
+        return projection if metadata in {corrupt, terminal} else None
+
+    original_get = publication_store.get_finalized
+
+    def finalized(_scope: TenantWorkspaceScope, publication_key: str):
+        if publication_key == corrupt.publication_key:
+            return replace(
+                record,
+                publication_key=corrupt.publication_key,
+                finalized_at_us=corrupt.finalized_at_us,
+                derivation_evidence_jcs=b"{}",
+            )
+        return original_get(SCOPE, publication_key)
+
+    monkeypatch.setattr(publication_store, "list_finalized", pages)
+    monkeypatch.setattr(publication_store, "get_finalized", finalized)
+    monkeypatch.setattr(service, "_review_projection", projections)
+
+    rows = service.list_review_outcomes(_reviewer(), correlation_id=CORRELATION)
+    assert [row.review_status for row in rows] == ["needs_changes"]
+    assert len(calls) == 2
+    assert calls[1] == corrupt.cursor
+
+
+def test_review_outcomes_stop_on_nonadvancing_page_and_cap_at_exactly_100(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    publication_store, _control_store, control_service, service = _setup(tmp_path)
+    metadata = _publish(publication_store, "1", now=1_000_000)
+    _transition(control_service, metadata, "approved", suffix="cap-terminal")
+    record = publication_store.get_finalized(SCOPE, metadata.publication_key)
+    projection = control_service.read_candidate_review(
+        _reviewer(), review_target_id=metadata.review_target_id, correlation_id=CORRELATION
+    )
+    assert projection is not None
+    calls = 0
+
+    def duplicate_page(*_args: object, **_kwargs: object) -> list[CandidatePublicationMetadata]:
+        nonlocal calls
+        calls += 1
+        return [metadata] * 100
+
+    monkeypatch.setattr(publication_store, "list_finalized", duplicate_page)
+    monkeypatch.setattr(service, "_review_projection", lambda *_args, **_kwargs: projection)
+    assert len(service.list_review_outcomes(_reviewer(), correlation_id=CORRELATION)) == 1
+    assert calls == 2
+
+    rows = [
+        replace(
+            metadata,
+            publication_key=f"candidate-publication:1.0:{UUID(int=index + 2_000, version=4)}",
+            finalized_at_us=index + 1,
+        )
+        for index in range(100)
+    ]
+    records = {
+        row.publication_key: replace(
+            record,
+            publication_key=row.publication_key,
+            finalized_at_us=row.finalized_at_us,
+        )
+        for row in rows
+    }
+    calls = 0
+
+    def full_page(*_args: object, **_kwargs: object) -> list[CandidatePublicationMetadata]:
+        nonlocal calls
+        calls += 1
+        return rows
+
+    monkeypatch.setattr(publication_store, "list_finalized", full_page)
+    monkeypatch.setattr(
+        publication_store,
+        "get_finalized",
+        lambda _scope, publication_key: records[publication_key],
+    )
+    outcomes = service.list_review_outcomes(_reviewer(), correlation_id=CORRELATION)
+    assert len(outcomes) == 100
+    assert calls == 1
+
+
+def test_review_outcomes_authority_and_store_failures_are_generic_unavailable(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    publication_store, _control_store, control_service, service = _setup(tmp_path)
+    metadata = _publish(publication_store, "1", now=1_000_000)
+
+    def store_failure(*_args: object, **_kwargs: object) -> None:
+        raise RuntimeError("private store failure")
+
+    monkeypatch.setattr(publication_store, "list_finalized", store_failure)
+    with pytest.raises(CandidateDiscoveryUnavailableError, match="authority is unavailable"):
+        service.list_review_outcomes(_reviewer(), correlation_id=CORRELATION)
+
+    monkeypatch.undo()
+    monkeypatch.setattr(
+        control_service,
+        "read_candidate_review",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(ControlStoreError("private control failure")),
+    )
+    assert publication_store.list_finalized(SCOPE, limit=100) == [metadata]
+    with pytest.raises(CandidateDiscoveryUnavailableError, match="authority is unavailable"):
+        service.list_review_outcomes(_reviewer(), correlation_id=CORRELATION)
 
 
 def test_review_queue_pages_past_terminal_corrupt_and_raced_rows(

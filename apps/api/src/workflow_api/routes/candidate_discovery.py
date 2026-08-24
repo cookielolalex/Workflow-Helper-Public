@@ -23,6 +23,7 @@ from ..candidate_discovery_service import (
     CandidateDiscoveryService,
     CandidateDiscoveryUnavailableError,
     CandidateDiscoveryValidationError,
+    CandidateReviewOutcomeRecord,
     CandidateReviewQueueRecord,
 )
 from ..candidate_publication_service import CandidatePublicationService
@@ -156,6 +157,40 @@ class CandidateReviewQueueItem(StrictModel):
 
 class CandidateReviewQueueResponse(StrictModel):
     items: tuple[CandidateReviewQueueItem, ...]
+    count: int
+
+
+class CandidateReviewOutcomeItem(StrictModel):
+    """Identifier-free, bounded terminal review result."""
+
+    command_sequence: tuple[Annotated[str, Field(min_length=1, max_length=128)], ...]
+    occurrence_count: Annotated[int, Field(ge=2, le=64)]
+    provenance: Literal["observed"]
+    review_status: Literal["approved", "rejected", "needs_changes"]
+    decided_at_us: Annotated[int, Field(gt=0)]
+
+    @classmethod
+    def from_record(cls, value: CandidateReviewOutcomeRecord) -> CandidateReviewOutcomeItem:
+        if type(value) is not CandidateReviewOutcomeRecord:
+            raise CandidateDiscoveryUnavailableError(
+                "candidate review outcomes returned invalid evidence"
+            )
+        try:
+            return cls(
+                command_sequence=value.command_sequence,
+                occurrence_count=value.occurrence_count,
+                provenance=value.provenance,
+                review_status=value.review_status,
+                decided_at_us=value.decided_at_us,
+            )
+        except (AttributeError, TypeError, ValueError, ValidationError) as exc:
+            raise CandidateDiscoveryUnavailableError(
+                "candidate review outcomes returned invalid evidence"
+            ) from exc
+
+
+class CandidateReviewOutcomesResponse(StrictModel):
+    items: tuple[CandidateReviewOutcomeItem, ...]
     count: int
 
 
@@ -364,6 +399,46 @@ def _list_candidate_review_queue(
             "candidate review queue returned invalid evidence"
         ) from exc
     return CandidateReviewQueueResponse(items=items, count=len(items))
+
+
+@router.get(
+    "/candidate-publications/review-outcomes",
+    response_model=CandidateReviewOutcomesResponse,
+)
+def list_candidate_review_outcomes(
+    principal: PrincipalDependency,
+    service: ServiceDependency,
+) -> CandidateReviewOutcomesResponse:
+    """Return fixed, bounded terminal evidence for the sealed synthetic reviewer."""
+
+    return _call(lambda: _list_candidate_review_outcomes(principal, service))
+
+
+def _list_candidate_review_outcomes(
+    principal: AuthenticatedPrincipal,
+    service: CandidateDiscoveryService,
+) -> CandidateReviewOutcomesResponse:
+    if type(principal) is not AuthenticatedPrincipal:
+        raise CandidateDiscoveryUnavailableError("candidate authentication unavailable")
+    if type(service) is not CandidateDiscoveryService:
+        raise CandidateDiscoveryUnavailableError("candidate discovery unavailable")
+    rows = service.list_review_outcomes(
+        principal,
+        correlation_id="candidate-review-outcomes",
+    )
+    if type(rows) is not list or len(rows) > MAX_DISCOVERY_LIMIT:
+        raise CandidateDiscoveryUnavailableError(
+            "candidate review outcomes returned an invalid result"
+        )
+    try:
+        items = tuple(CandidateReviewOutcomeItem.from_record(row) for row in rows)
+    except CandidateDiscoveryUnavailableError:
+        raise
+    except (AttributeError, TypeError, ValueError, ValidationError) as exc:
+        raise CandidateDiscoveryUnavailableError(
+            "candidate review outcomes returned invalid evidence"
+        ) from exc
+    return CandidateReviewOutcomesResponse(items=items, count=len(items))
 
 
 @router.post(

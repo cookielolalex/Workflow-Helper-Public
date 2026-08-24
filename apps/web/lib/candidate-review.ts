@@ -29,6 +29,20 @@ export type CandidateReviewView =
       readonly rows: readonly CandidateReviewRow[];
     };
 
+export type CandidateReviewOutcomeRow = {
+  readonly ordinal: number;
+  readonly command_sequence: readonly string[];
+  readonly occurrence_count: number;
+  readonly provenance: "observed";
+  readonly review_status: "approved" | "rejected" | "needs_changes";
+  readonly decided_at: string;
+};
+
+export type CandidateReviewOutcomesView =
+  | { readonly status: "unavailable" }
+  | { readonly status: "empty" }
+  | { readonly status: "populated"; readonly rows: readonly CandidateReviewOutcomeRow[] };
+
 const ROUTE_RESPONSE_KEYS = ["items", "count"] as const;
 const ROUTE_ITEM_KEYS = [
   "publication_key",
@@ -39,11 +53,19 @@ const ROUTE_ITEM_KEYS = [
   "review_status",
   "finalized_at_us",
 ] as const;
+const OUTCOME_ITEM_KEYS = [
+  "command_sequence",
+  "occurrence_count",
+  "provenance",
+  "review_status",
+  "decided_at_us",
+] as const;
 const LOADING_KEYS = ["status"] as const;
 const UNAVAILABLE_KEYS = ["status"] as const;
 const AVAILABLE_KEYS = ["status", "authenticated", "response"] as const;
 
 const unavailable = (): CandidateReviewView => ({ status: "unavailable" });
+const outcomeUnavailable = (): CandidateReviewOutcomesView => ({ status: "unavailable" });
 
 function isPlainRecord(value: unknown): value is Record<string, unknown> {
   if (value === null || typeof value !== "object" || Array.isArray(value)) {
@@ -111,6 +133,54 @@ function finalizedTimestamp(value: unknown): string | null {
   const timestamp = new Date(Math.trunc(value / 1000));
   if (Number.isNaN(timestamp.getTime())) return null;
   return timestamp.toISOString();
+}
+
+function parseOutcomeResponse(value: unknown): CandidateReviewOutcomesView {
+  if (!isPlainRecord(value) || !hasExactKeys(value, ROUTE_RESPONSE_KEYS)) {
+    return outcomeUnavailable();
+  }
+  if (
+    !Array.isArray(value.items) ||
+    typeof value.count !== "number" ||
+    !Number.isSafeInteger(value.count) ||
+    value.count < 0 ||
+    value.count > MAX_CANDIDATE_REVIEW_ITEMS ||
+    value.count !== value.items.length
+  ) {
+    return outcomeUnavailable();
+  }
+  const rows: CandidateReviewOutcomeRow[] = [];
+  for (let index = 0; index < value.items.length; index += 1) {
+    const item = value.items[index];
+    if (
+      !isPlainRecord(item) ||
+      !hasExactKeys(item, OUTCOME_ITEM_KEYS) ||
+      !Array.isArray(item.command_sequence) ||
+      item.command_sequence.length < 2 ||
+      item.command_sequence.length > MAX_CANDIDATE_REVIEW_COMMANDS ||
+      !item.command_sequence.every(validCommand) ||
+      typeof item.occurrence_count !== "number" ||
+      !Number.isSafeInteger(item.occurrence_count) ||
+      item.occurrence_count !== item.command_sequence.length ||
+      item.provenance !== "observed" ||
+      !["approved", "rejected", "needs_changes"].includes(
+        item.review_status as string,
+      )
+    ) {
+      return outcomeUnavailable();
+    }
+    const decidedAt = finalizedTimestamp(item.decided_at_us);
+    if (decidedAt === null) return outcomeUnavailable();
+    rows.push({
+      ordinal: index + 1,
+      command_sequence: [...item.command_sequence],
+      occurrence_count: item.occurrence_count,
+      provenance: "observed",
+      review_status: item.review_status as CandidateReviewOutcomeRow["review_status"],
+      decided_at: decidedAt,
+    });
+  }
+  return rows.length === 0 ? { status: "empty" } : { status: "populated", rows };
 }
 
 function parseRouteResponse(value: unknown): CandidateReviewView {
@@ -210,3 +280,20 @@ export function toCandidateReviewView(input: unknown): CandidateReviewView {
 export const adaptCandidateReview = toCandidateReviewView;
 export const parseCandidateReview = toCandidateReviewView;
 export const redactCandidateReviewResponse = toCandidateReviewView;
+
+/** Strictly redact the identifier-free terminal outcome route response. */
+export function toCandidateReviewOutcomesView(input: unknown): CandidateReviewOutcomesView {
+  try {
+    if (
+      !isPlainRecord(input) ||
+      !hasExactKeys(input, AVAILABLE_KEYS) ||
+      input.status !== "available" ||
+      input.authenticated !== true
+    ) {
+      return outcomeUnavailable();
+    }
+    return parseOutcomeResponse(input.response);
+  } catch {
+    return outcomeUnavailable();
+  }
+}

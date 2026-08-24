@@ -1,8 +1,15 @@
 // @ts-ignore The focused Node loader requires the explicit source extension.
-import { toCandidateReviewView, type CandidateReviewView } from "./candidate-review.ts";
+import {
+  toCandidateReviewOutcomesView,
+  toCandidateReviewView,
+  type CandidateReviewOutcomesView,
+  type CandidateReviewView,
+} from "./candidate-review.ts";
 
 export const CANDIDATE_REVIEW_QUEUE_PATH =
   "/v1/control/candidate-publications/review-queue" as const;
+export const CANDIDATE_REVIEW_OUTCOMES_PATH =
+  "/v1/control/candidate-publications/review-outcomes" as const;
 export const MIN_CANDIDATE_REVIEW_LIMIT = 1 as const;
 export const MAX_CANDIDATE_REVIEW_LIMIT = 100 as const;
 export const MAX_CANDIDATE_REVIEW_CORRELATION_ID_LENGTH = 128 as const;
@@ -29,6 +36,11 @@ export type CandidateReviewRequestInput = {
   readonly correlation_id: string;
   readonly limit?: number;
   readonly cursor?: string;
+};
+
+export type CandidateReviewOutcomesRequest = {
+  readonly path: typeof CANDIDATE_REVIEW_OUTCOMES_PATH;
+  readonly method: "GET";
 };
 
 const RESPONSE_KEYS = ["status", "body"] as const;
@@ -205,4 +217,32 @@ export const getCandidateReview = readCandidateReview;
 export const listCandidatePublications = readCandidateReview;
 export const requestCandidateReview = readCandidateReview;
 
-export type { CandidateReviewView } from "./candidate-review.ts";
+/** Build the only terminal-outcome route descriptor accepted by the server boundary. */
+export function buildCandidateReviewOutcomesRequest(): CandidateReviewOutcomesRequest {
+  return Object.freeze({ path: CANDIDATE_REVIEW_OUTCOMES_PATH, method: "GET" });
+}
+
+/** Resolve one synchronous fixed outcome response into its redacted view. */
+export function readCandidateReviewOutcomes(
+  transport: (request: CandidateReviewOutcomesRequest) => CandidateReviewTransportResult,
+): CandidateReviewOutcomesView {
+  try {
+    const value = transport(buildCandidateReviewOutcomesRequest());
+    if (
+      !isPlainRecord(value) ||
+      !hasExactKeys(value, RESPONSE_KEYS) ||
+      value.status !== 200
+    ) {
+      return { status: "unavailable" };
+    }
+    return toCandidateReviewOutcomesView({
+      status: "available",
+      authenticated: true,
+      response: value.body,
+    });
+  } catch {
+    return { status: "unavailable" };
+  }
+}
+
+export type { CandidateReviewOutcomesView, CandidateReviewView } from "./candidate-review.ts";

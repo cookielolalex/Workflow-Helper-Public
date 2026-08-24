@@ -1,10 +1,16 @@
 import { CandidateReviewQueue } from "@/components/CandidateReviewQueue";
-import { loadCandidateReviewQueue } from "@/lib/candidate-review-server";
+import {
+  loadCandidateReviewOutcomes,
+  loadCandidateReviewQueue,
+} from "@/lib/candidate-review-server";
 
 export const dynamic = "force-dynamic";
 
 export default async function CandidateReviewPage() {
-  const view = await loadCandidateReviewQueue();
+  const [view, outcomes] = await Promise.all([
+    loadCandidateReviewQueue(),
+    loadCandidateReviewOutcomes(),
+  ]);
 
   return (
     <div className="page-shell">
@@ -72,6 +78,44 @@ export default async function CandidateReviewPage() {
           </div>
         </section>
       ) : null}
+
+      <section className="panel" aria-labelledby="review-outcomes-heading">
+        <div className="panel-heading">
+          <div>
+            <p className="eyebrow">TERMINAL HISTORY</p>
+            <h2 id="review-outcomes-heading">Review outcomes</h2>
+          </div>
+          <span className="muted">Redacted synthetic evidence</span>
+        </div>
+        {outcomes.status === "populated" ? (
+          <div className="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th scope="col">Outcome</th>
+                  <th scope="col">Commands</th>
+                  <th scope="col">Status</th>
+                  <th scope="col">Decision time</th>
+                </tr>
+              </thead>
+              <tbody>
+                {outcomes.rows.map((row) => (
+                  <tr key={row.ordinal}>
+                    <th scope="row">Outcome {row.ordinal}</th>
+                    <td>{row.command_sequence.join(" → ")}</td>
+                    <td>{row.review_status}</td>
+                    <td>{row.decided_at}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        ) : outcomes.status === "empty" ? (
+          <p>No terminal review outcomes.</p>
+        ) : (
+          <p>Review outcomes are unavailable.</p>
+        )}
+      </section>
     </div>
   );
 }
