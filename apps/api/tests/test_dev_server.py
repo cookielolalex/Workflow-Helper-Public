@@ -247,3 +247,229 @@ def test_database_sidecars_contain_no_raw_proof_material(
             assert result == ("ok",)
         raw = database.read_bytes()
         assert all(proof.encode() not in raw for proof in _PROOFS.values())
+
+
+def test_existing_runtime_opener_is_non_serving_and_does_not_mutate_or_register(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    data_dir = tmp_path / "synthetic-runtime"
+    _configure(monkeypatch, data_dir)
+    dev_server.build_app()
+    before = dev_server._existing_runtime_snapshot(data_dir)
+    opener_snapshots: list[dev_server._ExistingRuntimeSnapshot] = []
+    construct_modes: list[bool] = []
+    original_construct = dev_server._construct_bundle
+    original_snapshot = dev_server._existing_runtime_snapshot
+
+    def observed_construct(**kwargs):
+        construct_modes.append(kwargs["create_directory"])
+        return original_construct(**kwargs)
+
+    def forbidden_registration(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("existing-runtime opener attempted durable registration")
+
+    def observed_snapshot(data_dir: Path) -> dev_server._ExistingRuntimeSnapshot:
+        snapshot = original_snapshot(data_dir)
+        opener_snapshots.append(snapshot)
+        return snapshot
+
+    monkeypatch.setattr(dev_server, "_construct_bundle", observed_construct)
+    monkeypatch.setattr(dev_server, "_existing_runtime_snapshot", observed_snapshot)
+    monkeypatch.setattr(
+        SQLiteLegacySessionStore,
+        "register_workload_principal",
+        forbidden_registration,
+    )
+    monkeypatch.setattr(
+        SQLiteBrowserSessionStore,
+        "register_session",
+        forbidden_registration,
+    )
+
+    application = dev_server.open_existing_app()
+
+    assert construct_modes == [False]
+    assert len(opener_snapshots) == 2
+    assert opener_snapshots[0] == opener_snapshots[1]
+    after = original_snapshot(data_dir)
+    assert after.directory == before.directory
+    assert after.databases == before.databases
+    assert type(application.state.runtime_bundle) is SealedSyntheticRuntimeBundle
+    response = TestClient(application).get(
+        "/v1/control/candidate-publications?correlation_id=existing-runtime",
+        headers={
+            "Cookie": f"workflow_session={_SESSION}",
+            "X-Workflow-Dev-Reviewer-Proof": _PROOFS["reviewer"],
+        },
+    )
+    assert response.status_code == 200
+    assert response.json() == {"items": [], "count": 0, "next_cursor": None}
+
+
+def test_existing_runtime_opener_rejects_extra_symlink_and_writable_database(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    extra_dir = tmp_path / "extra-runtime"
+    _configure(monkeypatch, extra_dir)
+    dev_server.build_app()
+    (extra_dir / "unexpected").write_text("synthetic", encoding="utf-8")
+    with pytest.raises(RuntimeError, match="exactly six"):
+        dev_server.open_existing_app()
+
+    symlink_dir = tmp_path / "symlink-runtime"
+    _configure(monkeypatch, symlink_dir)
+    dev_server.build_app()
+    database = symlink_dir / "legacy.sqlite3"
+    held = tmp_path / "held-legacy.sqlite3"
+    database.rename(held)
+    database.symlink_to(held)
+    with pytest.raises(RuntimeError, match="unsafe"):
+        dev_server.open_existing_app()
+
+    writable_dir = tmp_path / "writable-runtime"
+    _configure(monkeypatch, writable_dir)
+    dev_server.build_app()
+    (writable_dir / "legacy.sqlite3").chmod(0o666)
+    with pytest.raises(RuntimeError, match="unsafe"):
+        dev_server.open_existing_app()
+
+
+def test_existing_runtime_opener_rejects_constructor_time_schema_drift(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    data_dir = tmp_path / "synthetic-runtime"
+    _configure(monkeypatch, data_dir)
+    dev_server.build_app()
+    original_construct = dev_server._construct_bundle
+
+    def mutating_construct(**kwargs):
+        result = original_construct(**kwargs)
+        with sqlite3.connect(data_dir / "legacy.sqlite3") as connection:
+            connection.execute("create table forbidden_opener_mutation(value text)")
+        return result
+
+    monkeypatch.setattr(dev_server, "_construct_bundle", mutating_construct)
+
+    with pytest.raises(RuntimeError, match="changed while opening"):
+        dev_server.open_existing_app()
+
+
+def test_database_digest_pins_one_read_snapshot_and_closes_deterministically(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database = tmp_path / "snapshot.sqlite3"
+    with sqlite3.connect(database) as connection:
+        assert connection.execute("pragma journal_mode = wal").fetchone() == ("wal",)
+        connection.execute("create table evidence(value text not null)")
+        connection.execute("insert into evidence values ('before')")
+    expected = dev_server._database_digest(database)
+    original_connect = sqlite3.connect
+    statements: list[str] = []
+    rollbacks = 0
+    closes = 0
+    concurrent_write_done = False
+
+    class ObservedConnection:
+        def __init__(self, inner: sqlite3.Connection) -> None:
+            self.inner = inner
+
+        def execute(self, statement: str):
+            nonlocal concurrent_write_done
+            normalized = " ".join(statement.lower().split())
+            statements.append(normalized)
+            if normalized.startswith("select type, name") and not concurrent_write_done:
+                with original_connect(database) as writer:
+                    writer.execute("insert into evidence values ('after')")
+                concurrent_write_done = True
+            return self.inner.execute(statement)
+
+        def rollback(self) -> None:
+            nonlocal rollbacks
+            rollbacks += 1
+            self.inner.rollback()
+
+        def close(self) -> None:
+            nonlocal closes
+            closes += 1
+            self.inner.close()
+
+    def observed_connect(*args: object, **kwargs: object) -> ObservedConnection:
+        return ObservedConnection(original_connect(*args, **kwargs))
+
+    monkeypatch.setattr(dev_server.sqlite3, "connect", observed_connect)
+    observed = dev_server._database_digest(database)
+    monkeypatch.setattr(dev_server.sqlite3, "connect", original_connect)
+
+    assert statements[:3] == [
+        "pragma query_only = on",
+        "begin",
+        "pragma integrity_check",
+    ]
+    assert concurrent_write_done is True
+    assert observed == expected
+    assert dev_server._database_digest(database) != expected
+    assert rollbacks == 1
+    assert closes == 1
+
+
+def test_existing_runtime_opener_rejects_row_drift(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    data_dir = tmp_path / "row-drift-runtime"
+    _configure(monkeypatch, data_dir)
+    dev_server.build_app()
+    database = data_dir / "legacy.sqlite3"
+    with sqlite3.connect(database) as connection:
+        connection.execute("create table row_drift_probe(value text not null)")
+        connection.execute("insert into row_drift_probe values ('before')")
+    original_construct = dev_server._construct_bundle
+
+    def mutating_construct(**kwargs):
+        result = original_construct(**kwargs)
+        with sqlite3.connect(database) as connection:
+            connection.execute("insert into row_drift_probe values ('after')")
+        return result
+
+    monkeypatch.setattr(dev_server, "_construct_bundle", mutating_construct)
+
+    with pytest.raises(RuntimeError, match="changed while opening"):
+        dev_server.open_existing_app()
+
+
+def test_existing_runtime_opener_rejects_missing_corrupt_and_unsafe_sidecars(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    missing_dir = tmp_path / "missing-runtime"
+    _configure(monkeypatch, missing_dir)
+    dev_server.build_app()
+    (missing_dir / "safety.sqlite3").unlink()
+    with pytest.raises(RuntimeError, match="exactly six"):
+        dev_server.open_existing_app()
+
+    corrupt_dir = tmp_path / "corrupt-runtime"
+    _configure(monkeypatch, corrupt_dir)
+    dev_server.build_app()
+    (corrupt_dir / "safety.sqlite3").write_bytes(b"not a sqlite database")
+    with pytest.raises(RuntimeError, match="database is unavailable"):
+        dev_server.open_existing_app()
+
+    sidecar_dir = tmp_path / "sidecar-runtime"
+    _configure(monkeypatch, sidecar_dir)
+    dev_server.build_app()
+    unsafe_sidecar = sidecar_dir / "safety.sqlite3-wal"
+    unsafe_sidecar.symlink_to(sidecar_dir / "safety.sqlite3")
+    with pytest.raises(RuntimeError, match="unsafe"):
+        dev_server.open_existing_app()
+
+    orphan_dir = tmp_path / "orphan-runtime"
+    _configure(monkeypatch, orphan_dir)
+    dev_server.build_app()
+    (orphan_dir / "orphan.sqlite3-wal").write_bytes(b"synthetic")
+    with pytest.raises(RuntimeError, match="exactly six"):
+        dev_server.open_existing_app()

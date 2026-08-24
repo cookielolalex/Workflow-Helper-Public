@@ -4,9 +4,11 @@ set -Eeuo pipefail
 repository_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 smoke_dir="$(mktemp -d "${TMPDIR:-/tmp}/workflow-helper-dev-smoke.XXXXXX")"
 runtime_env="$smoke_dir/.env"
-project_name="workflow-helper-dev-smoke-${GITHUB_RUN_ID:-local}-${GITHUB_RUN_ATTEMPT:-0}-$$"
+project_name="workflow-helper-p3b-${GITHUB_RUN_ID:-local}-${GITHUB_RUN_ATTEMPT:-0}-$$"
 api_port="${WORKFLOW_API_PORT:-18000}"
-base_url="http://127.0.0.1:${api_port}"
+web_port="${WORKFLOW_WEB_PORT:-13000}"
+api_base="http://127.0.0.1:${api_port}"
+web_base="http://127.0.0.1:${web_port}"
 
 capture_proof="$(python3 -c 'import secrets; print(secrets.token_hex(32))')"
 worker_proof="$(python3 -c 'import secrets; print(secrets.token_hex(32))')"
@@ -17,15 +19,14 @@ reviewer_csrf="$(python3 -c 'import base64,secrets; print(base64.urlsafe_b64enco
 cat >"$runtime_env" <<EOF
 WORKFLOW_COMPOSE_ENV_FILE=$runtime_env
 WORKFLOW_API_PORT=$api_port
+WORKFLOW_WEB_PORT=$web_port
 ENVIRONMENT=development
 LOG_LEVEL=INFO
-API_BASE_URL=http://api:8000
-NEXT_PUBLIC_API_BASE_URL=http://localhost:$api_port
 AWS_REGION=ap-northeast-1
 RAW_BUCKET=workflow-helper-raw-dev
 PROCESSED_BUCKET=workflow-helper-processed-dev
 RAW_RETENTION_DAYS=14
-WORKFLOW_DEV_DATA_DIR=/tmp/workflow-helper-dev-data
+WORKFLOW_DEV_DATA_DIR=/var/lib/workflow-helper/runtime
 WORKFLOW_DEV_CAPTURE_PROOF=$capture_proof
 WORKFLOW_DEV_WORKER_PROOF=$worker_proof
 WORKFLOW_DEV_REVIEWER_PROOF=$reviewer_proof
@@ -43,91 +44,160 @@ compose=(
 cleanup() {
   status=$?
   if (( status != 0 )); then
-    echo "Synthetic dev-runtime smoke failed; collecting API diagnostics." >&2
-    "${compose[@]} ps" >&2 || true
-    "${compose[@]} logs --no-color api" >&2 || true
+    echo "Synthetic dev-runtime smoke failed; collecting bounded diagnostics." >&2
+    "${compose[@]}" ps >&2 || true
+    "${compose[@]}" logs --no-color api seed web >&2 || true
   fi
-  "${compose[@]} down --volumes --remove-orphans" >/dev/null 2>&1 || true
+  "${compose[@]}" down --volumes --remove-orphans >/dev/null 2>&1 || true
   rm -rf "$smoke_dir"
   exit "$status"
 }
 trap cleanup EXIT
 
-"${compose[@]}" up --detach --wait --wait-timeout 120 api
+"${compose[@]}" up --detach --wait --wait-timeout 180 web
 
-for attempt in $(seq 1 120); do
-  if health_json="$(curl --silent --show-error "$base_url/health" 2>/dev/null)"; then
-    HEALTH_JSON="$health_json" python3 - <<'PY'
+health_json="$(curl --fail --silent --show-error --max-time 5 "$api_base/health")"
+HEALTH_JSON="$health_json" python3 - <<'PY'
 import json
 import os
 
 payload = json.loads(os.environ["HEALTH_JSON"])
-if payload.get("status") != "ok" or payload.get("environment") != "synthetic":
-    raise SystemExit(f"unexpected dev health payload: {payload}")
+if payload != {
+    "status": "ok",
+    "service": "workflow-helper-api",
+    "environment": "synthetic",
+}:
+    raise SystemExit("unexpected synthetic health payload")
 PY
-    break
-  fi
-  if (( attempt == 120 )); then
-    echo "Timed out waiting for the synthetic dev API." >&2
-    exit 1
-  fi
-  sleep 1
-done
-
-session_id="00000000-0000-4000-8000-000000000201"
-session_payload="$(cat <<EOF
-{"schema_version":"1.0","session_id":"$session_id","machine_id":"synthetic-machine-201","project_id":"synthetic-project","started_at":"2026-01-01T00:00:00Z","ended_at":"2026-01-01T00:00:05Z","active_duration_seconds":5,"approved_process":"acad","package_sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","package_size_bytes":1}
-EOF
-)"
 
 status="$({
-  curl --silent --show-error --output "$smoke_dir/register.json" --write-out '%{http_code}' \
-    --request POST "$base_url/v1/sessions" \
+  curl --silent --show-error --max-time 5 \
+    --output "$smoke_dir/missing-proof.json" --write-out '%{http_code}' \
+    --request POST "$api_base/v1/sessions" \
     --header 'Content-Type: application/json' \
-    --header "X-Workflow-Dev-Proof: $capture_proof" \
-    --data "$session_payload"
-} || true)"
-if [[ "$status" != "201" ]]; then
-  echo "Authorized synthetic session registration returned HTTP $status." >&2
-  cat "$smoke_dir/register.json" >&2 || true
-  exit 1
-fi
-
-status="$({
-  curl --silent --show-error --output "$smoke_dir/list.json" --write-out '%{http_code}' \
-    --request GET "$base_url/v1/sessions" \
-    --header "Cookie: workflow_session=$reviewer_session" \
-    --header "X-Workflow-Dev-Reviewer-Proof: $reviewer_proof"
-} || true)"
-if [[ "$status" != "200" ]]; then
-  echo "Authorized synthetic reviewer read returned HTTP $status." >&2
-  cat "$smoke_dir/list.json" >&2 || true
-  exit 1
-fi
-
-status="$({
-  curl --silent --show-error --output "$smoke_dir/missing-proof.json" --write-out '%{http_code}' \
-    --request POST "$base_url/v1/sessions" \
-    --header 'Content-Type: application/json' \
-    --data "$session_payload"
+    --data '{}'
 } || true)"
 if [[ "$status" != "401" ]]; then
-  echo "Missing synthetic proof returned HTTP $status; fail-closed denial expected." >&2
-  cat "$smoke_dir/missing-proof.json" >&2 || true
+  echo "Missing synthetic proof did not fail closed." >&2
   exit 1
 fi
 
 status="$({
-  curl --silent --show-error --output "$smoke_dir/invalid-proof.json" --write-out '%{http_code}' \
-    --request POST "$base_url/v1/sessions" \
+  curl --silent --show-error --max-time 5 \
+    --output "$smoke_dir/invalid-proof.json" --write-out '%{http_code}' \
+    --request POST "$api_base/v1/sessions" \
     --header 'Content-Type: application/json' \
     --header 'X-Workflow-Dev-Proof: invalid-proof' \
-    --data "$session_payload"
+    --data '{}'
 } || true)"
 if [[ "$status" != "401" ]]; then
-  echo "Invalid synthetic proof returned HTTP $status; fail-closed denial expected." >&2
-  cat "$smoke_dir/invalid-proof.json" >&2 || true
+  echo "Invalid synthetic proof did not fail closed." >&2
   exit 1
 fi
 
-echo "Synthetic dev-runtime smoke passed: health, authorized session registration/read, and missing/invalid proof denial."
+status="$({
+  curl --silent --show-error --max-time 10 \
+    --output "$smoke_dir/candidate.html" --write-out '%{http_code}' \
+    "$web_base/candidate-review"
+} || true)"
+if [[ "$status" != "200" ]]; then
+  echo "Candidate review page returned HTTP $status." >&2
+  exit 1
+fi
+
+SMOKE_HTML="$smoke_dir/candidate.html" \
+CAPTURE_PROOF="$capture_proof" \
+WORKER_PROOF="$worker_proof" \
+REVIEWER_PROOF="$reviewer_proof" \
+REVIEWER_SESSION="$reviewer_session" \
+REVIEWER_CSRF="$reviewer_csrf" \
+python3 - <<'PY'
+import os
+import re
+from pathlib import Path
+
+html = Path(os.environ["SMOKE_HTML"]).read_text(encoding="utf-8")
+required = (
+    "Candidate review queue",
+    "Candidates awaiting review",
+    "Candidate 1",
+    "Approve",
+    "Reject",
+)
+if any(value not in html for value in required):
+    raise SystemExit("candidate review page did not render the live redacted candidate")
+for value in (
+    os.environ["CAPTURE_PROOF"],
+    os.environ["WORKER_PROOF"],
+    os.environ["REVIEWER_PROOF"],
+    os.environ["REVIEWER_SESSION"],
+    os.environ["REVIEWER_CSRF"],
+    "d6d9e5b7-c9bc-4eb1-ae4a-1a14ed5b1350",
+    "publication_key",
+    "review_target_id",
+):
+    if value in html:
+        raise SystemExit("candidate review page exposed private server evidence")
+if re.search(r"candidate-(?:publication|skill):", html, re.IGNORECASE):
+    raise SystemExit("candidate review page exposed a raw candidate identifier")
+PY
+
+action_body='ordinal=1&action=approve'
+status="$({
+  curl --silent --show-error --max-time 10 --max-redirs 0 \
+    --dump-header "$smoke_dir/action.headers" \
+    --output "$smoke_dir/action.body" --write-out '%{http_code}' \
+    --request POST "$web_base/candidate-review/action" \
+    --header "Host: 127.0.0.1:$web_port" \
+    --header "Origin: http://127.0.0.1:$web_port" \
+    --header 'Content-Type: application/x-www-form-urlencoded' \
+    --data-binary "$action_body"
+} || true)"
+if [[ "$status" != "303" || -s "$smoke_dir/action.body" ]]; then
+  echo "Candidate review action did not return the fixed bodyless 303." >&2
+  exit 1
+fi
+ACTION_HEADERS="$smoke_dir/action.headers" python3 - <<'PY'
+import os
+from pathlib import Path
+
+headers = Path(os.environ["ACTION_HEADERS"]).read_text(encoding="iso-8859-1")
+locations = [
+    line.split(":", 1)[1].strip()
+    for line in headers.splitlines()
+    if line.lower().startswith("location:")
+]
+if locations != ["/candidate-review"]:
+    raise SystemExit("candidate review redirect was not exact")
+PY
+
+status="$({
+  curl --silent --show-error --max-time 10 \
+    --output "$smoke_dir/empty.html" --write-out '%{http_code}' \
+    "$web_base/candidate-review"
+} || true)"
+if [[ "$status" != "200" ]]; then
+  echo "Reviewed candidate page returned HTTP $status." >&2
+  exit 1
+fi
+EMPTY_HTML="$smoke_dir/empty.html" python3 - <<'PY'
+import os
+import re
+from pathlib import Path
+
+html = Path(os.environ["EMPTY_HTML"]).read_text(encoding="utf-8")
+if "No candidates awaiting review." not in html:
+    raise SystemExit("reviewed candidate remained visible")
+if re.search(r"candidate-(?:publication|skill):", html, re.IGNORECASE):
+    raise SystemExit("empty candidate page exposed a raw candidate identifier")
+PY
+
+"${compose[@]}" run --rm --no-deps seed \
+  python /workspace/dev-runtime-seed.py --verify-empty \
+  >"$smoke_dir/independent-verify.log"
+if [[ "$(cat "$smoke_dir/independent-verify.log")" != "synthetic candidate durability verified" ]]; then
+  echo "Independent existing-runtime verification failed." >&2
+  exit 1
+fi
+
+echo "Synthetic dev-runtime smoke passed: v2 seed, redacted queue, review action, and durable empty reopen."

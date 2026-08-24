@@ -53,6 +53,22 @@ services:
       WORKFLOW_WORKER_TOKEN: ${WORKFLOW_WORKER_TOKEN:-}
     ports:
       - "${WORKFLOW_API_PORT:-8000}:8000"
+    volumes:
+      - dev-runtime-data:/var/lib/workflow-helper
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - >-
+          import json,urllib.request;
+          response=urllib.request.urlopen('http://127.0.0.1:8000/health',timeout=2);
+          payload=json.load(response);
+          assert response.status == 200 and payload.get('environment') == 'synthetic'
+      interval: 2s
+      timeout: 3s
+      retries: 30
+      start_period: 2s
     depends_on:
       postgres:
         condition: service_healthy
@@ -78,18 +94,51 @@ services:
       api:
         condition: service_started
 
-  web:
-    build:
-      context: ./apps/web
-      args:
-        NEXT_PUBLIC_API_BASE_URL: http://localhost:8000
+  seed:
+    build: ./apps/api
+    env_file: ${WORKFLOW_COMPOSE_ENV_FILE:-.env}
+    command: ["python", "/workspace/dev-runtime-seed.py"]
     environment:
-      API_BASE_URL: http://api:8000
-      NEXT_PUBLIC_API_BASE_URL: http://localhost:8000
-    ports:
-      - "3000:3000"
+      ENVIRONMENT: ${ENVIRONMENT:-}
+      WORKFLOW_DEV_DATA_DIR: ${WORKFLOW_DEV_DATA_DIR:-}
+      WORKFLOW_DEV_CAPTURE_PROOF: ${WORKFLOW_DEV_CAPTURE_PROOF:-}
+      WORKFLOW_DEV_WORKER_PROOF: ${WORKFLOW_DEV_WORKER_PROOF:-}
+      WORKFLOW_DEV_REVIEWER_PROOF: ${WORKFLOW_DEV_REVIEWER_PROOF:-}
+      WORKFLOW_DEV_REVIEWER_SESSION: ${WORKFLOW_DEV_REVIEWER_SESSION:-}
+      WORKFLOW_DEV_REVIEWER_CSRF: ${WORKFLOW_DEV_REVIEWER_CSRF:-}
+      WORKFLOW_DEV_CONTRACT_PATH: /workspace/session.json
+      PYTHONPATH: /workspace/worker-src
+      RAW_BUCKET: ${RAW_BUCKET:-workflow-helper-raw-dev}
+      PROCESSED_BUCKET: ${PROCESSED_BUCKET:-workflow-helper-processed-dev}
+    volumes:
+      - dev-runtime-data:/var/lib/workflow-helper
+      - ./scripts/dev-runtime-seed.py:/workspace/dev-runtime-seed.py:ro
+      - ./contracts/examples/session.json:/workspace/session.json:ro
+      - ./apps/worker/src:/workspace/worker-src:ro
     depends_on:
-      - api
+      api:
+        condition: service_healthy
+    restart: "no"
+
+  web:
+    build: ./apps/web
+    environment:
+      ENVIRONMENT: ${ENVIRONMENT:-}
+      API_BASE_URL: http://api:8000
+      WORKFLOW_REVIEW_API_BASE_URL: http://api:8000
+      WORKFLOW_DEV_REVIEWER_PROOF: ${WORKFLOW_DEV_REVIEWER_PROOF:-}
+      WORKFLOW_DEV_REVIEWER_SESSION: ${WORKFLOW_DEV_REVIEWER_SESSION:-}
+      WORKFLOW_DEV_REVIEWER_CSRF: ${WORKFLOW_DEV_REVIEWER_CSRF:-}
+      WORKFLOW_REVIEW_BROWSER_ORIGIN: http://127.0.0.1:${WORKFLOW_WEB_PORT:-3000}
+      WORKFLOW_REVIEW_BROWSER_HOST: 127.0.0.1:${WORKFLOW_WEB_PORT:-3000}
+    ports:
+      - "${WORKFLOW_WEB_PORT:-3000}:3000"
+    depends_on:
+      api:
+        condition: service_healthy
+      seed:
+        condition: service_completed_successfully
 
 volumes:
+  dev-runtime-data:
   postgres-data:
