@@ -212,12 +212,12 @@ test("loads terminal outcomes through only the fixed authenticated server route"
 
 test("each legal effective-state action re-fetches and posts exactly once", async () => {
   configure();
-  for (const [reviewStatus, action, destination] of [
-    ["unreviewed", "approve", "approved"],
-    ["unreviewed", "start_review", "pending"],
-    ["pending", "approve", "approved"],
-    ["pending", "reject", "rejected"],
-    ["pending", "needs_changes", "needs_changes"],
+  for (const [reviewStatus, action, destination, reasonCode] of [
+    ["unreviewed", "approve", "approved", undefined],
+    ["unreviewed", "start_review", "pending", undefined],
+    ["pending", "approve", "approved", undefined],
+    ["pending", "reject", "rejected", "sequence"],
+    ["pending", "needs_changes", "needs_changes", "evidence"],
   ]) {
     const calls = [];
     const fetcher = async (url, init) => {
@@ -226,7 +226,7 @@ test("each legal effective-state action re-fetches and posts exactly once", asyn
         ? jsonResponse(200, { items: [item(reviewStatus)], count: 1 })
         : jsonResponse(200, { status: destination });
     };
-    assert.equal(await submitCandidateReviewAction(1, action, fetcher), "success");
+    assert.equal(await submitCandidateReviewAction(1, action, reasonCode, fetcher), "success");
     assert.equal(calls.length, 2);
     assert.equal(calls[1].init.method, "POST");
     assert.equal(calls[1].init.redirect, "error");
@@ -236,26 +236,86 @@ test("each legal effective-state action re-fetches and posts exactly once", asyn
     assert.equal(body.status, destination);
     assert.equal(body.correlation_id, "web-candidate-action");
     assert.match(body.idempotency_key, /^web-dev-[a-f0-9]{64}$/);
+    assert.deepEqual(
+      reasonCode === undefined
+        ? { reason: body.reason, evidence: body.evidence }
+        : { reason: body.reason, evidence: body.evidence },
+      reasonCode === undefined
+        ? { reason: undefined, evidence: undefined }
+        : {
+            reason: reasonCode === "sequence"
+              ? "Synthetic command sequence requires correction."
+              : "Synthetic observed evidence is insufficient.",
+            evidence: { reason_code: reasonCode },
+          },
+    );
     assert.equal(calls[1].init.headers.get("origin"), "https://review.synthetic.example");
     assert.equal(calls[1].init.headers.get("x-csrf-token"), REVIEWER_CSRF);
   }
 });
 
+test("fixed reason codes produce stable retry identity and distinct decisions", async () => {
+  configure();
+  async function submitted(reasonCode) {
+    const bodies = [];
+    const fetcher = async (_url, init) => {
+      if (init.method === "POST") bodies.push(JSON.parse(init.body));
+      return init.method === "POST"
+        ? jsonResponse(200, { status: "needs_changes" })
+        : jsonResponse(200, { items: [item("pending")], count: 1 });
+    };
+    assert.equal(
+      await submitCandidateReviewAction(1, "needs_changes", reasonCode, fetcher),
+      "success",
+    );
+    return bodies[0];
+  }
+  const first = await submitted("sequence");
+  const replay = await submitted("sequence");
+  const changed = await submitted("evidence");
+  assert.equal(first.idempotency_key, replay.idempotency_key);
+  assert.notEqual(first.idempotency_key, changed.idempotency_key);
+  assert.deepEqual(first.evidence, { reason_code: "sequence" });
+  assert.deepEqual(changed.evidence, { reason_code: "evidence" });
+});
+
 test("illegal effective-state transitions fail before the review POST", async () => {
   configure();
-  for (const [reviewStatus, action] of [
-    ["unreviewed", "reject"],
-    ["unreviewed", "needs_changes"],
-    ["pending", "start_review"],
+  for (const [reviewStatus, action, reasonCode] of [
+    ["unreviewed", "reject", "sequence"],
+    ["unreviewed", "needs_changes", "evidence"],
+    ["pending", "start_review", undefined],
   ]) {
     let calls = 0;
     const fetcher = async () => {
       calls += 1;
       return jsonResponse(200, { items: [item(reviewStatus)], count: 1 });
     };
-    assert.equal(await submitCandidateReviewAction(1, action, fetcher), "unavailable");
+    assert.equal(await submitCandidateReviewAction(1, action, reasonCode, fetcher), "unavailable");
     assert.equal(calls, 1);
   }
+});
+
+test("reason and action combinations fail before any fetch", async () => {
+  configure();
+  let calls = 0;
+  const fetcher = async () => {
+    calls += 1;
+    return jsonResponse(200, { items: [item("pending")], count: 1 });
+  };
+  for (const [action, code] of [
+    ["approve", "sequence"],
+    ["start_review", "evidence"],
+    ["reject", undefined],
+    ["needs_changes", undefined],
+    ["reject", "unknown"],
+  ]) {
+    assert.equal(
+      await submitCandidateReviewAction(1, action, code, fetcher),
+      "unavailable",
+    );
+  }
+  assert.equal(calls, 0);
 });
 
 test("a control-store race remains a generic conflict after one POST", async () => {
@@ -268,7 +328,7 @@ test("a control-store race remains a generic conflict after one POST", async () 
       : jsonResponse(409, { detail: "request conflicts with current state" });
   };
 
-  assert.equal(await submitCandidateReviewAction(1, "reject", fetcher), "conflict");
+  assert.equal(await submitCandidateReviewAction(1, "reject", "sequence", fetcher), "conflict");
   assert.equal(calls, 2);
 });
 
@@ -282,7 +342,7 @@ test("malformed cached GET or POST responses fail closed without leaking details
       count: 1,
     });
   };
-  assert.equal(await submitCandidateReviewAction(1, "approve", invalidList), "unavailable");
+  assert.equal(await submitCandidateReviewAction(1, "approve", undefined, invalidList), "unavailable");
   assert.equal(calls, 1);
 
   calls = 0;
@@ -292,7 +352,7 @@ test("malformed cached GET or POST responses fail closed without leaking details
       ? jsonResponse(200, { items: [item()], count: 1 })
       : jsonResponse(200, { status: "rejected", detail: "private" });
   };
-  assert.equal(await submitCandidateReviewAction(1, "approve", mismatchedPost), "unavailable");
+  assert.equal(await submitCandidateReviewAction(1, "approve", undefined, mismatchedPost), "unavailable");
   assert.equal(calls, 2);
 });
 
@@ -351,17 +411,27 @@ function actionRequest(
   });
 }
 
-test("accepts only the exact same-origin two-field ordinal/action form", async () => {
+test("accepts only exact same-origin action and fixed-reason forms", async () => {
   configure();
   assert.deepEqual(
     await parseCandidateReviewActionRequest(actionRequest("ordinal=1&action=approve")),
     { ordinal: 1, action: "approve" },
   );
-  for (const action of ["start_review", "reject", "needs_changes"]) {
+  for (const action of ["start_review"]) {
     assert.deepEqual(
       await parseCandidateReviewActionRequest(actionRequest(`ordinal=1&action=${action}`)),
       { ordinal: 1, action },
     );
+  }
+  for (const action of ["reject", "needs_changes"]) {
+    for (const reason_code of ["sequence", "evidence"]) {
+      assert.deepEqual(
+        await parseCandidateReviewActionRequest(
+          actionRequest(`ordinal=1&reason_code=${reason_code}&action=${action}`),
+        ),
+        { ordinal: 1, action, reason_code },
+      );
+    }
   }
   assert.deepEqual(
     await parseCandidateReviewActionRequest(actionRequest("ordinal=100&action=approve")),
@@ -400,6 +470,15 @@ test("accepts only the exact same-origin two-field ordinal/action form", async (
     actionRequest("ordinal=1&action=approved"),
     actionRequest("ordinal=1&action=pending"),
     actionRequest("ordinal=1&action=approve&extra=x"),
+    actionRequest("ordinal=1&action=approve&reason_code=sequence"),
+    actionRequest("ordinal=1&action=start_review&reason_code=evidence"),
+    actionRequest("ordinal=1&action=reject"),
+    actionRequest("ordinal=1&action=needs_changes"),
+    actionRequest("ordinal=1&reason_code=unknown&action=reject"),
+    actionRequest("ordinal=1&reason_code=sequence&reason_code=evidence&action=reject"),
+    actionRequest("ordinal=1&reason_code=%73equence&action=reject"),
+    actionRequest("ordinal=1&reason_code=sequence&action=reject&extra=x"),
+    actionRequest("ordinal=1&action=reject&reason_code=sequence"),
     actionRequest("ordinal=candidate-publication%3A1.0%3Araw&action=approve"),
     actionRequest("ordinal=1&action=approve", { "content-type": "application/json" }),
     actionRequest("ordinal=1&action=approve", { cookie: "private=1" }),
@@ -425,6 +504,8 @@ test("live review page exposes actions only for their effective state", () => {
   assert.match(source, /name="action" value="start_review"/);
   assert.match(source, /name="action" value="reject"/);
   assert.match(source, /name="action" value="needs_changes"/);
+  assert.match(source, /name="reason_code"/);
+  assert.doesNotMatch(source, /textarea|type="text"/);
   assert.match(source, /row\.review_status === "unreviewed"/);
 });
 

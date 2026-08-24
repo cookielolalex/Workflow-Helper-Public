@@ -463,6 +463,10 @@ for value in (
     "Approve",
     "Reject",
     "Needs changes",
+    "Reject reason",
+    "Changes reason",
+    "Sequence mismatch",
+    "Insufficient evidence",
 ):
     if value not in visible:
         raise SystemExit("pending candidate controls were incomplete")
@@ -538,7 +542,7 @@ if [[ "$(cat "$smoke_dir/independent-pending-verify.log")" != "synthetic pending
   exit 1
 fi
 
-action_body='ordinal=1&action=needs_changes'
+action_body='ordinal=1&reason_code=evidence&action=needs_changes'
 status="$({
   curl --silent --show-error --max-time 10 --max-redirs 0 \
     --dump-header "$smoke_dir/terminal.headers" \
@@ -657,9 +661,11 @@ if ! "${compose[@]}" run --rm --no-deps -T seed python - \
 import runpy
 
 from workflow_api import dev_server
+from workflow_api.control_auth import AuthenticatedPrincipal, ControlRole
 
 seed = runpy.run_path("/workspace/dev-runtime-seed.py")
-driver = seed["_ASGIDriver"](dev_server.open_existing_app())
+application = dev_server.open_existing_app()
+driver = seed["_ASGIDriver"](application)
 response = driver.request(
     "GET",
     "/v1/control/candidate-publications/review-outcomes",
@@ -690,6 +696,30 @@ if (
     or payload["items"][0]["decided_at_us"] <= 0
 ):
     raise SystemExit("independent terminal outcome verification failed")
+bundle = application.state.runtime_bundle
+store = bundle.candidate_publication_store
+if store is None:
+    raise SystemExit("private terminal reason verification failed")
+records = store.list_finalized(dev_server._SCOPE, limit=100)
+if len(records) != 1:
+    raise SystemExit("private terminal reason verification failed")
+principal = AuthenticatedPrincipal(
+    "reviewer_synthetic",
+    frozenset({ControlRole.REVIEWER}),
+    dev_server._SCOPE,
+)
+projection = bundle.control_service.read_candidate_review(
+    principal,
+    review_target_id=records[0].review_target_id,
+    correlation_id="smoke-private-reason-verification",
+)
+if (
+    projection is None
+    or projection.status != "needs_changes"
+    or projection.detail.get("reason") != "Synthetic observed evidence is insufficient."
+    or projection.detail.get("evidence") != {"reason_code": "evidence"}
+):
+    raise SystemExit("private terminal reason verification failed")
 print("synthetic terminal outcome durability verified")
 PY
 then

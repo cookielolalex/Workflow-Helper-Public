@@ -11,7 +11,11 @@ export async function POST(request: Request): Promise<Response> {
   try {
     const action = await parseCandidateReviewActionRequest(request);
     if (action !== null) {
-      await submitCandidateReviewAction(action.ordinal, action.action);
+      await submitCandidateReviewAction(
+        action.ordinal,
+        action.action,
+        action.reason_code,
+      );
     }
   } catch {
     // The browser receives one fixed non-oracular response for every outcome.

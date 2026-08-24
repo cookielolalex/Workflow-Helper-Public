@@ -55,21 +55,46 @@ export default async function CandidateReviewPage() {
                         <button type="submit" name="action" value="approve">
                           Approve
                         </button>
-                        {row.review_status === "unreviewed" ? (
+                      </form>
+                      {row.review_status === "unreviewed" ? (
+                        <form method="post" action="/candidate-review/action">
+                          <input type="hidden" name="ordinal" value={row.ordinal} />
                           <button type="submit" name="action" value="start_review">
                             Start review
                           </button>
-                        ) : (
-                          <>
+                        </form>
+                      ) : (
+                        <>
+                          <form method="post" action="/candidate-review/action">
+                            <input type="hidden" name="ordinal" value={row.ordinal} />
+                            <label>
+                              Reject reason
+                              <select name="reason_code" required defaultValue="">
+                                <option value="" disabled>Select a fixed reason</option>
+                                <option value="sequence">Sequence mismatch</option>
+                                <option value="evidence">Insufficient evidence</option>
+                              </select>
+                            </label>
                             <button type="submit" name="action" value="reject">
                               Reject
                             </button>
+                          </form>
+                          <form method="post" action="/candidate-review/action">
+                            <input type="hidden" name="ordinal" value={row.ordinal} />
+                            <label>
+                              Changes reason
+                              <select name="reason_code" required defaultValue="">
+                                <option value="" disabled>Select a fixed reason</option>
+                                <option value="sequence">Sequence mismatch</option>
+                                <option value="evidence">Insufficient evidence</option>
+                              </select>
+                            </label>
                             <button type="submit" name="action" value="needs_changes">
                               Needs changes
                             </button>
-                          </>
-                        )}
-                      </form>
+                          </form>
+                        </>
+                      )}
                     </td>
                   </tr>
                 ))}
