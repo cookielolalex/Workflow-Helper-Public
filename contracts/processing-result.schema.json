@@ -1,0 +1,58 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://workflow-helper.local/contracts/processing-result.schema.json",
+  "title": "Processed CAD workflow timeline",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "session_id",
+    "event_count",
+    "meaningful_event_count",
+    "timeline",
+    "keyframes",
+    "warnings"
+  ],
+  "properties": {
+    "schema_version": { "const": "1.0" },
+    "session_id": { "type": "string", "format": "uuid" },
+    "event_count": { "type": "integer", "minimum": 0 },
+    "meaningful_event_count": { "type": "integer", "minimum": 0 },
+    "timeline": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["offset_seconds", "event_type", "summary", "source_event_id"],
+        "properties": {
+          "offset_seconds": { "type": "number", "minimum": 0 },
+          "event_type": {
+            "enum": [
+              "session_started",
+              "session_paused",
+              "session_resumed",
+              "session_ended",
+              "drawing_opened",
+              "drawing_saved",
+              "drawing_closed",
+              "cad_command",
+              "foreground_changed",
+              "idle_started",
+              "idle_ended"
+            ]
+          },
+          "summary": { "type": "string", "minLength": 1, "maxLength": 512 },
+          "source_event_id": { "type": "string", "format": "uuid" }
+        }
+      }
+    },
+    "keyframes": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1, "maxLength": 1024 }
+    },
+    "warnings": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1, "maxLength": 2000 }
+    }
+  }
+}

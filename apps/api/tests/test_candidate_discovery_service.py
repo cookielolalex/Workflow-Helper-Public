@@ -1,0 +1,491 @@
+from __future__ import annotations
+
+import errno
+import hashlib
+import importlib
+import os
+import sqlite3
+from pathlib import Path
+from uuid import UUID
+
+import pytest
+
+from workflow_api.candidate_discovery_service import (
+    CandidateDiscoveryService,
+    CandidateDiscoveryUnavailableError,
+    CandidateDiscoveryValidationError,
+)
+from workflow_api.candidate_publication_service import (
+    CandidatePublicationRequest,
+    CandidatePublicationService,
+)
+from workflow_api.candidate_publication_store import (
+    CandidatePublicationMetadata,
+    SQLiteCandidatePublicationStore,
+    _restricted_jcs,
+)
+from workflow_api.control_auth import (
+    AuthenticatedPrincipal,
+    AuthorizationDeniedError,
+    ControlRole,
+)
+from workflow_api.control_scope import TenantWorkspaceScope
+from workflow_api.control_service import ControlService
+from workflow_api.control_store import SQLiteControlStore
+from workflow_api.models import (
+    ArtifactProvider,
+    ArtifactRef,
+    ArtifactRole,
+    EventType,
+    OperationSegment,
+    ProcessingJobV2,
+    ProcessingResultV2,
+    TimelineItem,
+)
+from workflow_api.processing_job_v2_identity import processing_job_v2_payload_digest
+
+SCOPE = TenantWorkspaceScope("tenant-synthetic", "workspace-synthetic")
+OTHER_SCOPE = TenantWorkspaceScope("tenant-other", "workspace-synthetic")
+CORRELATION = "corr-discovery-synthetic"
+
+
+def _synthetic_uuid(digit: str) -> UUID:
+    return UUID(f"{digit * 8}-{digit * 4}-4{digit * 3}-8{digit * 3}-{digit * 12}")
+
+
+def _evidence(digit: str) -> dict[str, object]:
+    job_id = _synthetic_uuid(digit)
+    base = int(digit, 16)
+    session_id = _synthetic_uuid(format((base + 1) % 16, "x"))
+    event_id = _synthetic_uuid(format((base + 2) % 16, "x"))
+    second_event_id = _synthetic_uuid(format((base + 3) % 16, "x"))
+    job = ProcessingJobV2(
+        schema_version="2.0",
+        job_id=job_id,
+        session_id=session_id,
+        input_artifact=ArtifactRef(
+            provider=ArtifactProvider.S3,
+            file_id=f"raw-package-{digit}",
+            revision="raw-revision-0001",
+            sha256="a" * 64,
+            size_bytes=4096,
+            mime_type="application/zip",
+            role=ArtifactRole.RAW_PACKAGE,
+        ),
+    )
+    timeline = [
+        TimelineItem(
+            offset_seconds=1,
+            event_type=EventType.CAD_COMMAND,
+            summary="synthetic command",
+            source_event_id=event_id,
+        ),
+        TimelineItem(
+            offset_seconds=2,
+            event_type=EventType.CAD_COMMAND,
+            summary="synthetic command",
+            source_event_id=second_event_id,
+        ),
+    ]
+    result = ProcessingResultV2(
+        schema_version="2.0",
+        session_id=session_id,
+        event_count=2,
+        meaningful_event_count=2,
+        timeline=timeline,
+        operation_segments=[
+            OperationSegment(
+                sequence=1,
+                start_offset_seconds=1,
+                end_offset_seconds=1,
+                command_names=["LINE"],
+                drawing_ref=f"drawing-{digit}",
+                summary="synthetic operation",
+                source_event_ids=[event_id],
+            ),
+            OperationSegment(
+                sequence=2,
+                start_offset_seconds=2,
+                end_offset_seconds=2,
+                command_names=["LINE"],
+                drawing_ref=f"drawing-{digit}",
+                summary="synthetic operation",
+                source_event_ids=[second_event_id],
+            ),
+        ],
+        keyframes=[],
+        warnings=[],
+    )
+    artifact = ArtifactRef(
+        provider=ArtifactProvider.GOOGLE_DRIVE,
+        file_id=f"timeline-{digit}",
+        revision="timeline-revision-0001",
+        sha256=(digit * 64),
+        size_bytes=128,
+        mime_type="application/json",
+        role=ArtifactRole.TIMELINE,
+    ).model_dump(mode="json")
+    manifest = {
+        "schema_version": "1.0",
+        "job_id": str(job_id),
+        "session_id": str(session_id),
+        "payload_digest": processing_job_v2_payload_digest(job),
+        "payload_digest_scheme": "workflow-helper.processing-job-v2.payload.sha256-jcs.v1",
+        "outputs": [{"store_namespace": "google-drive://synthetic", "artifact_ref": artifact}],
+    }
+    manifest_jcs = _restricted_jcs(manifest).encode("utf-8")
+    source_digest = hashlib.sha256(
+        b"workflow-helper\0processing-job-v2\0result-digest\0sha256-jcs-v1\0"
+        + manifest_jcs
+    ).hexdigest()
+    return {
+        "envelope_version": "1.0",
+        "job": job,
+        "result": result,
+        "result_manifest": {
+            **manifest,
+            "result_manifest_jcs": manifest_jcs.decode("utf-8"),
+            "source_result_sha256": source_digest,
+        },
+        "timeline_binding": {"store_namespace": "google-drive://synthetic", "artifact_ref": artifact},
+        "drawing_ref": f"drawing-{digit}",
+        "occurrences": [
+            {"event_id": str(event_id), "command_name": "LINE", "segment_sequence": 1},
+            {
+                "event_id": str(second_event_id),
+                "command_name": "LINE",
+                "segment_sequence": 2,
+            },
+        ],
+        "rejected_alternative_count": 0,
+        "qualifying_run_length": 2,
+    }
+
+
+def _publication_request(
+    evidence: dict[str, object],
+    scope: TenantWorkspaceScope = SCOPE,
+    *,
+    now: int,
+) -> CandidatePublicationRequest:
+    return CandidatePublicationRequest(
+        scope=scope,
+        job=evidence["job"],
+        result=evidence["result"],
+        result_manifest=evidence["result_manifest"],
+        timeline_binding=evidence["timeline_binding"],
+        drawing_ref=evidence["drawing_ref"],
+        timeline_commands=evidence["occurrences"],
+        rejected_alternative_count=evidence["rejected_alternative_count"],
+        qualifying_run_length=evidence["qualifying_run_length"],
+        reservation_owner_id="writer_synthetic_01",
+        lease_duration_seconds=30,
+        now=now,
+    )
+
+
+def _setup(
+    tmp_path: Path,
+) -> tuple[SQLiteCandidatePublicationStore, SQLiteControlStore, ControlService, CandidateDiscoveryService]:
+    control_store = SQLiteControlStore(tmp_path / "control.sqlite3")
+    publication_store = SQLiteCandidatePublicationStore(
+        tmp_path / "publication.sqlite3",
+        control_database_path=control_store,
+    )
+    control_service = ControlService(control_store)
+    return (
+        publication_store,
+        control_store,
+        control_service,
+        CandidateDiscoveryService(publication_store, control_service),
+    )
+
+
+def _reviewer(scope: TenantWorkspaceScope = SCOPE) -> AuthenticatedPrincipal:
+    return AuthenticatedPrincipal(
+        "reviewer_synthetic_01",
+        frozenset({ControlRole.REVIEWER}),
+        scope,
+    )
+
+
+def _publish(
+    publication_store: SQLiteCandidatePublicationStore,
+    digit: str,
+    *,
+    scope: TenantWorkspaceScope = SCOPE,
+    now: int,
+) -> CandidatePublicationMetadata:
+    evidence = _evidence(digit)
+    response = CandidatePublicationService(publication_store).publish(
+        _publication_request(evidence, scope, now=now)
+    )
+    assert type(response) is CandidatePublicationMetadata
+    return response
+
+
+def _approve(
+    control_service: ControlService,
+    metadata: CandidatePublicationMetadata,
+    *,
+    principal: AuthenticatedPrincipal | None = None,
+    correlation_id: str = "corr-review-synthetic",
+) -> None:
+    control_service.append_candidate_review(
+        principal or _reviewer(),
+        publication=metadata,
+        status="approved",
+        idempotency_key=f"review-{metadata.publication_key}",
+        correlation_id=correlation_id,
+    )
+
+
+def test_import_and_construction_are_inert_and_types_are_exact(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    publication_store, _control_store, control_service, _ = _setup(tmp_path)
+    before = sorted(path.name for path in tmp_path.iterdir())
+
+    def forbidden(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("discovery construction must not open SQLite")
+
+    monkeypatch.setattr(sqlite3, "connect", forbidden)
+    module = importlib.import_module("workflow_api.candidate_discovery_service")
+    assert module.CandidateDiscoveryService(publication_store, control_service)
+    assert sorted(path.name for path in tmp_path.iterdir()) == before
+
+    with pytest.raises(TypeError):
+        CandidateDiscoveryService(object(), control_service)  # type: ignore[arg-type]
+    with pytest.raises(TypeError):
+        CandidateDiscoveryService(publication_store, object())  # type: ignore[arg-type]
+
+
+def test_happy_path_is_authenticated_scoped_and_metadata_only(tmp_path: Path) -> None:
+    publication_store, _control_store, _control_service, service = _setup(tmp_path)
+    metadata = _publish(publication_store, "1", now=1_000_000)
+    rows = service.list_finalized_unreviewed(
+        _reviewer(), correlation_id=CORRELATION, limit=1
+    )
+
+    assert rows == [metadata]
+    assert type(rows[0]) is CandidatePublicationMetadata
+    assert not hasattr(rows[0], "canonical_bytes")
+    assert not hasattr(rows[0], "derivation_evidence_jcs")
+    assert not hasattr(rows[0], "reservation_owner_id")
+    assert not hasattr(rows[0], "reservation_epoch")
+    assert not hasattr(rows[0], "reservation_expires_at_us")
+    assert rows[0].cursor is not None
+    assert not any(
+        isinstance(value, str) and value.startswith("whscope1|")
+        for value in (rows[0].tenant_id, rows[0].workspace_id, rows[0].publication_key, rows[0].review_target_id)
+    )
+
+
+def test_authorization_and_server_scope_are_checked_before_publication_read(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    publication_store, _control_store, _control_service, service = _setup(tmp_path)
+    called = False
+
+    def forbidden(*_args: object, **_kwargs: object) -> list[CandidatePublicationMetadata]:
+        nonlocal called
+        called = True
+        raise AssertionError("publication access occurred before authorization")
+
+    monkeypatch.setattr(publication_store, "list_finalized_unreviewed", forbidden)
+    with pytest.raises(AuthorizationDeniedError):
+        service.list_finalized_unreviewed(
+            AuthenticatedPrincipal("subject_roleless", frozenset(), SCOPE),
+            correlation_id=CORRELATION,
+        )
+    with pytest.raises(AuthorizationDeniedError):
+        service.list_finalized_unreviewed(
+            AuthenticatedPrincipal("reviewer_synthetic_01", frozenset({ControlRole.REVIEWER}), None),
+            correlation_id=CORRELATION,
+        )
+    assert called is False
+
+
+def test_missing_mismatched_unavailable_and_incomplete_binding_fail_closed(tmp_path: Path) -> None:
+    control_store = SQLiteControlStore(tmp_path / "control.sqlite3")
+    control_service = ControlService(control_store)
+    no_binding = SQLiteCandidatePublicationStore(tmp_path / "no-binding.sqlite3")
+    with pytest.raises(CandidateDiscoveryUnavailableError):
+        CandidateDiscoveryService(no_binding, control_service).list_finalized_unreviewed(
+            _reviewer(), correlation_id=CORRELATION
+        )
+
+    other_control = SQLiteControlStore(tmp_path / "other-control.sqlite3")
+    mismatched = SQLiteCandidatePublicationStore(
+        tmp_path / "mismatched.sqlite3", control_database_path=other_control
+    )
+    with pytest.raises(CandidateDiscoveryUnavailableError):
+        CandidateDiscoveryService(mismatched, control_service).list_finalized_unreviewed(
+            _reviewer(), correlation_id=CORRELATION
+        )
+
+    incomplete_path = tmp_path / "incomplete.sqlite3"
+    with sqlite3.connect(incomplete_path):
+        pass
+    incomplete = SQLiteCandidatePublicationStore(
+        tmp_path / "incomplete-publication.sqlite3",
+        control_database_path=incomplete_path,
+    )
+    with pytest.raises(CandidateDiscoveryUnavailableError):
+        CandidateDiscoveryService(incomplete, control_service).list_finalized_unreviewed(
+            _reviewer(), correlation_id=CORRELATION
+        )
+
+    unavailable = tmp_path / "unavailable.sqlite3"
+    unavailable_control = SQLiteControlStore(unavailable)
+    unavailable_publication = SQLiteCandidatePublicationStore(
+        tmp_path / "unavailable-publication.sqlite3",
+        control_database_path=unavailable_control,
+    )
+    unavailable_service = CandidateDiscoveryService(
+        unavailable_publication, ControlService(unavailable_control)
+    )
+    unavailable.unlink()
+    with pytest.raises(CandidateDiscoveryUnavailableError):
+        unavailable_service.list_finalized_unreviewed(
+            _reviewer(), correlation_id=CORRELATION
+        )
+
+
+def test_hardlink_alias_of_control_authority_fails_closed(tmp_path: Path) -> None:
+    control_path = tmp_path / "control.sqlite3"
+    control_store = SQLiteControlStore(control_path)
+    publication_path = tmp_path / "publication-hardlink.sqlite3"
+    try:
+        os.link(control_path, publication_path)
+    except OSError as exc:
+        unavailable = {
+            code
+            for code in (
+                errno.EACCES,
+                errno.EINVAL,
+                errno.ENOSYS,
+                errno.ENOTSUP,
+                errno.EOPNOTSUPP,
+                errno.EPERM,
+                errno.EXDEV,
+            )
+            if code is not None
+        }
+        if exc.errno in unavailable:
+            pytest.skip("hard links are unavailable on this filesystem")
+        raise
+
+    publication_store = SQLiteCandidatePublicationStore(
+        publication_path,
+        control_database_path=control_store,
+    )
+    service = CandidateDiscoveryService(publication_store, ControlService(control_store))
+    with pytest.raises(CandidateDiscoveryUnavailableError):
+        service.list_finalized_unreviewed(_reviewer(), correlation_id=CORRELATION)
+
+
+def test_reviewed_rows_are_suppressed_and_cursor_is_stable(tmp_path: Path) -> None:
+    publication_store, _control_store, control_service, service = _setup(tmp_path)
+    first = _publish(publication_store, "1", now=1_000_000)
+    second = _publish(publication_store, "4", now=1_100_000)
+    _approve(control_service, first)
+
+    rows = service.list_finalized_unreviewed(
+        _reviewer(), correlation_id=CORRELATION, limit=1
+    )
+    assert rows == [second]
+    assert service.list_finalized_unreviewed(
+        _reviewer(), correlation_id=CORRELATION, cursor=rows[0].cursor
+    ) == []
+
+
+def test_review_race_is_revalidated_and_does_not_hide_later_effective_rows(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    publication_store, _control_store, control_service, service = _setup(tmp_path)
+    first = _publish(publication_store, "1", now=1_000_000)
+    second = _publish(publication_store, "4", now=1_100_000)
+    original = control_service.read_candidate_review
+    raced = False
+
+    def read_with_race(*args: object, **kwargs: object):
+        nonlocal raced
+        target = kwargs["review_target_id"]
+        if not raced and target == first.review_target_id:
+            raced = True
+            _approve(control_service, first, correlation_id="corr-race-review")
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(control_service, "read_candidate_review", read_with_race)
+    rows = service.list_finalized_unreviewed(
+        _reviewer(), correlation_id=CORRELATION, limit=1
+    )
+    assert raced is True
+    assert rows == [second]
+
+
+def test_corrupt_cross_scope_and_unauthorized_rows_are_suppressed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    publication_store, _control_store, control_service, service = _setup(tmp_path)
+    corrupt = _publish(publication_store, "1", now=1_000_000)
+    _publish(publication_store, "4", scope=OTHER_SCOPE, now=1_100_000)
+    with sqlite3.connect(publication_store.database_path) as connection:
+        connection.execute("DROP TRIGGER candidate_publications_no_update_finalized")
+        connection.execute("DROP TRIGGER candidate_publications_bytes_once")
+        connection.execute(
+            "UPDATE candidate_publications SET canonical_bytes = zeroblob(byte_length) "
+            "WHERE publication_key = ?",
+            (corrupt.publication_key,),
+        )
+
+    monkeypatch.setattr(
+        publication_store,
+        "list_finalized_unreviewed",
+        lambda *_args, **_kwargs: [
+            publication_store.get_finalized(OTHER_SCOPE, _publish(publication_store, "7", scope=OTHER_SCOPE, now=1_200_000).publication_key)
+        ],
+    )
+    monkeypatch.setattr(
+        control_service,
+        "read_candidate_review",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AuthorizationDeniedError("action forbidden")),
+    )
+    assert service.list_finalized_unreviewed(
+        _reviewer(), correlation_id=CORRELATION
+    ) == []
+
+
+def test_malformed_cursor_and_unbounded_limit_are_rejected_without_reads(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _publication_store, _control_store, _control_service, service = _setup(tmp_path)
+    monkeypatch.setattr(
+        service,
+        "_verify_authority",
+        lambda: (_ for _ in ()).throw(AssertionError("read occurred")),
+    )
+    for value in (0, 101, True, "1"):
+        with pytest.raises(CandidateDiscoveryValidationError):
+            service.list_finalized_unreviewed(
+                _reviewer(), correlation_id=CORRELATION, limit=value  # type: ignore[arg-type]
+            )
+    with pytest.raises(CandidateDiscoveryValidationError):
+        service.list_finalized_unreviewed(
+            _reviewer(), correlation_id=CORRELATION, cursor={"scope": SCOPE}
+        )  # type: ignore[arg-type]
+
+
+def test_read_does_not_mutate_control_database(tmp_path: Path) -> None:
+    publication_store, control_store, _control_service, service = _setup(tmp_path)
+    _publish(publication_store, "1", now=1_000_000)
+    before = Path(control_store._database_path).read_bytes()
+    service.list_finalized_unreviewed(_reviewer(), correlation_id=CORRELATION)
+    after = Path(control_store._database_path).read_bytes()
+    assert after == before

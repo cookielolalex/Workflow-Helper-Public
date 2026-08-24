@@ -1,0 +1,82 @@
+{
+  "schema_version": "1.0",
+  "skill_id": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+  "name": "Verify a synthetic cutout alignment",
+  "description": "Synthetic observed workflow approved by a pseudonymous human reviewer.",
+  "trigger": {
+    "condition": "A synthetic cutout move has completed.",
+    "signals": ["move operation completed", "reference centerline present"]
+  },
+  "preconditions": ["The final synthetic drawing state is available."],
+  "inputs": [
+    {
+      "name": "final_synthetic_state",
+      "kind": "drawing_state",
+      "description": "Final synthetic geometry state to inspect.",
+      "required": true
+    }
+  ],
+  "relevant_drawing_state": {
+    "description": "A synthetic enclosure face after cutout alignment.",
+    "required_conditions": ["Cutout and centerline are visible."],
+    "excluded_conditions": ["Measurement is unavailable."]
+  },
+  "ordered_actions": [
+    {
+      "sequence": 1,
+      "instruction": "Measure the final synthetic centerline offset.",
+      "parameter_names": ["maximum_offset_mm"]
+    }
+  ],
+  "parameters": [
+    {
+      "name": "maximum_offset_mm",
+      "value": 0,
+      "unit": "mm",
+      "provenance": "human_supplied"
+    }
+  ],
+  "constraints": ["Use only the synthetic measurement shown in the evidence."],
+  "expected_result": {
+    "description": "The synthetic alignment is verified.",
+    "observable_outcomes": ["Measured offset meets the human-approved criterion."]
+  },
+  "validation_checks": [
+    {
+      "description": "Compare the measured offset with the approved maximum.",
+      "success_criterion": "Measured offset is not greater than maximum_offset_mm."
+    }
+  ],
+  "known_exceptions": [
+    {
+      "condition": "The reference centerline is absent.",
+      "handling": "Stop validation and return the candidate for human review."
+    }
+  ],
+  "supporting_examples": [
+    {
+      "session_id": "22222222-2222-4222-8222-222222222222",
+      "summary": "Synthetic reviewed measurement timeline.",
+      "artifact_references": [
+        {
+          "provider": "google_drive",
+          "file_id": "synthetic-evidence-002",
+          "revision": "revision-003",
+          "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "size_bytes": 384,
+          "mime_type": "application/json",
+          "role": "timeline"
+        }
+      ]
+    }
+  ],
+  "confidence": 0.98,
+  "provenance": "observed",
+  "approval_status": "approved",
+  "human_approval_evidence": {
+    "reviewer_id": "reviewer_synthetic_01",
+    "decision_event_id": "33333333-3333-4333-8333-333333333333",
+    "decided_at": "2026-08-18T06:30:00Z",
+    "approval_basis": "Pseudonymous expert reviewed the synthetic evidence and validation criterion."
+  }
+}

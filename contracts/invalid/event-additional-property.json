@@ -1,0 +1,7 @@
+{
+  "event_id": "22222222-2222-4222-8222-222222222222",
+  "occurred_at": "2026-08-16T04:00:00Z",
+  "event_type": "session_started",
+  "source": "agent",
+  "screen_pixels": "not permitted"
+}

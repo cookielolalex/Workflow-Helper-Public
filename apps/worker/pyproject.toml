@@ -1,0 +1,30 @@
+[build-system]
+requires = ["hatchling>=1.25"]
+build-backend = "hatchling.build"
+
+[project]
+name = "workflow-helper-worker"
+version = "0.1.0"
+description = "Deterministic preprocessing worker for Workflow Helper"
+requires-python = ">=3.12"
+dependencies = [
+  "boto3>=1.35.2,<2",
+  "pydantic>=2.10,<3"
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.3,<9", "ruff>=0.8,<1"]
+
+[project.scripts]
+workflow-helper-worker = "workflow_worker.main:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/workflow_worker"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"

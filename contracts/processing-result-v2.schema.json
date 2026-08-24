@@ -1,0 +1,103 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://workflow-helper.local/contracts/processing-result-v2.schema.json",
+  "title": "Processed CAD workflow timeline with operation segments",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "session_id",
+    "event_count",
+    "meaningful_event_count",
+    "timeline",
+    "operation_segments",
+    "keyframes",
+    "warnings"
+  ],
+  "properties": {
+    "schema_version": { "const": "2.0" },
+    "session_id": {
+      "$ref": "processing-result.schema.json#/properties/session_id"
+    },
+    "event_count": {
+      "$ref": "processing-result.schema.json#/properties/event_count"
+    },
+    "meaningful_event_count": {
+      "$ref": "processing-result.schema.json#/properties/meaningful_event_count"
+    },
+    "timeline": {
+      "$ref": "processing-result.schema.json#/properties/timeline"
+    },
+    "operation_segments": {
+      "type": "array",
+      "maxItems": 1000,
+      "items": { "$ref": "#/$defs/operation_segment" }
+    },
+    "keyframes": {
+      "$ref": "processing-result.schema.json#/properties/keyframes"
+    },
+    "warnings": {
+      "$ref": "processing-result.schema.json#/properties/warnings"
+    }
+  },
+  "$defs": {
+    "operation_segment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "sequence",
+        "start_offset_seconds",
+        "end_offset_seconds",
+        "command_names",
+        "drawing_ref",
+        "summary",
+        "source_event_ids"
+      ],
+      "properties": {
+        "sequence": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1000
+        },
+        "start_offset_seconds": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 604800
+        },
+        "end_offset_seconds": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 604800
+        },
+        "command_names": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 64,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          }
+        },
+        "drawing_ref": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 255
+        },
+        "summary": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        },
+        "source_event_ids": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 256,
+          "uniqueItems": true,
+          "items": { "type": "string", "format": "uuid" }
+        }
+      }
+    }
+  }
+}

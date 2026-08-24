@@ -1,0 +1,36 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://workflow-helper.local/contracts/event.schema.json",
+  "title": "CAD workflow event",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["event_id", "occurred_at", "event_type", "source"],
+  "properties": {
+    "event_id": { "type": "string", "format": "uuid" },
+    "occurred_at": { "type": "string", "format": "date-time" },
+    "event_type": {
+      "enum": [
+        "session_started",
+        "session_paused",
+        "session_resumed",
+        "session_ended",
+        "drawing_opened",
+        "drawing_saved",
+        "drawing_closed",
+        "cad_command",
+        "foreground_changed",
+        "idle_started",
+        "idle_ended"
+      ]
+    },
+    "source": { "enum": ["agent", "autocad", "reviewer", "system"] },
+    "command_name": { "type": ["string", "null"], "maxLength": 128 },
+    "drawing_ref": { "type": ["string", "null"], "maxLength": 255 },
+    "details": {
+      "type": "object",
+      "additionalProperties": {
+        "type": ["string", "number", "integer", "boolean", "null"]
+      }
+    }
+  }
+}

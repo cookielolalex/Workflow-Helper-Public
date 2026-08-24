@@ -1,0 +1,52 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://workflow-helper.local/contracts/processing-completion-v2.schema.json",
+  "title": "Idempotent worker processing completion with operation segments",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "session_id",
+    "event_count",
+    "meaningful_event_count",
+    "timeline",
+    "operation_segments",
+    "keyframes",
+    "warnings",
+    "output_object_key",
+    "idempotency_key"
+  ],
+  "properties": {
+    "schema_version": {
+      "$ref": "processing-result-v2.schema.json#/properties/schema_version"
+    },
+    "session_id": {
+      "$ref": "processing-result-v2.schema.json#/properties/session_id"
+    },
+    "event_count": {
+      "$ref": "processing-result-v2.schema.json#/properties/event_count"
+    },
+    "meaningful_event_count": {
+      "$ref": "processing-result-v2.schema.json#/properties/meaningful_event_count"
+    },
+    "timeline": {
+      "$ref": "processing-result-v2.schema.json#/properties/timeline"
+    },
+    "operation_segments": {
+      "$ref": "processing-result-v2.schema.json#/properties/operation_segments"
+    },
+    "keyframes": {
+      "$ref": "processing-result-v2.schema.json#/properties/keyframes"
+    },
+    "warnings": {
+      "$ref": "processing-result-v2.schema.json#/properties/warnings"
+    },
+    "output_object_key": {
+      "type": "string",
+      "pattern": "^sessions/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/timeline-v2\\.json$"
+    },
+    "idempotency_key": {
+      "$ref": "processing-completion.schema.json#/properties/idempotency_key"
+    }
+  }
+}

@@ -1,0 +1,56 @@
+{
+  "schema_version": "1.0",
+  "skill_id": "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee",
+  "name": "Invalid synthetic skill with undeclared data",
+  "description": "Invalid fixture containing an undeclared property.",
+  "trigger": { "condition": "Synthetic condition.", "signals": ["synthetic signal"] },
+  "preconditions": ["Synthetic precondition."],
+  "inputs": [
+    {
+      "name": "synthetic_input",
+      "kind": "drawing_state",
+      "description": "Synthetic input.",
+      "required": true
+    }
+  ],
+  "relevant_drawing_state": {
+    "description": "Synthetic state.",
+    "required_conditions": [],
+    "excluded_conditions": []
+  },
+  "ordered_actions": [
+    { "sequence": 1, "instruction": "Perform a synthetic action.", "parameter_names": [] }
+  ],
+  "parameters": [],
+  "constraints": ["Synthetic constraint."],
+  "expected_result": {
+    "description": "Synthetic result.",
+    "observable_outcomes": ["Synthetic outcome."]
+  },
+  "validation_checks": [
+    { "description": "Synthetic check.", "success_criterion": "Synthetic success." }
+  ],
+  "known_exceptions": [],
+  "supporting_examples": [
+    {
+      "session_id": "55555555-5555-4555-8555-555555555555",
+      "summary": "Synthetic evidence.",
+      "artifact_references": [
+        {
+          "provider": "google_drive",
+          "file_id": "synthetic-evidence-invalid-003",
+          "revision": "revision-001",
+          "sha256": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+          "size_bytes": 64,
+          "mime_type": "application/json",
+          "role": "timeline"
+        }
+      ]
+    }
+  ],
+  "confidence": 0.4,
+  "provenance": "observed",
+  "approval_status": "unreviewed",
+  "human_approval_evidence": null,
+  "undeclared_note": "synthetic"
+}

@@ -1,0 +1,55 @@
+{
+  "schema_version": "1.0",
+  "skill_id": "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+  "name": "Invalid AI-approved synthetic skill",
+  "description": "Invalid fixture claiming approval without human evidence.",
+  "trigger": { "condition": "Synthetic condition.", "signals": ["synthetic signal"] },
+  "preconditions": ["Synthetic precondition."],
+  "inputs": [
+    {
+      "name": "synthetic_input",
+      "kind": "drawing_state",
+      "description": "Synthetic input.",
+      "required": true
+    }
+  ],
+  "relevant_drawing_state": {
+    "description": "Synthetic state.",
+    "required_conditions": [],
+    "excluded_conditions": []
+  },
+  "ordered_actions": [
+    { "sequence": 1, "instruction": "Perform a synthetic action.", "parameter_names": [] }
+  ],
+  "parameters": [],
+  "constraints": ["Synthetic constraint."],
+  "expected_result": {
+    "description": "Synthetic result.",
+    "observable_outcomes": ["Synthetic outcome."]
+  },
+  "validation_checks": [
+    { "description": "Synthetic check.", "success_criterion": "Synthetic success." }
+  ],
+  "known_exceptions": [],
+  "supporting_examples": [
+    {
+      "session_id": "44444444-4444-4444-8444-444444444444",
+      "summary": "Synthetic evidence.",
+      "artifact_references": [
+        {
+          "provider": "google_drive",
+          "file_id": "synthetic-evidence-invalid-001",
+          "revision": "revision-001",
+          "sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+          "size_bytes": 64,
+          "mime_type": "application/json",
+          "role": "timeline"
+        }
+      ]
+    }
+  ],
+  "confidence": 0.9,
+  "provenance": "ai_inferred",
+  "approval_status": "approved",
+  "human_approval_evidence": null
+}

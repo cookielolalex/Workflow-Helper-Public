@@ -1,0 +1,46 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://workflow-helper.local/contracts/processing-completion.schema.json",
+  "title": "Idempotent worker processing completion",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "session_id",
+    "event_count",
+    "meaningful_event_count",
+    "timeline",
+    "keyframes",
+    "warnings",
+    "output_object_key",
+    "idempotency_key"
+  ],
+  "properties": {
+    "schema_version": {
+      "$ref": "processing-result.schema.json#/properties/schema_version"
+    },
+    "session_id": {
+      "$ref": "processing-result.schema.json#/properties/session_id"
+    },
+    "event_count": {
+      "$ref": "processing-result.schema.json#/properties/event_count"
+    },
+    "meaningful_event_count": {
+      "$ref": "processing-result.schema.json#/properties/meaningful_event_count"
+    },
+    "timeline": {
+      "$ref": "processing-result.schema.json#/properties/timeline"
+    },
+    "keyframes": {
+      "$ref": "processing-result.schema.json#/properties/keyframes"
+    },
+    "warnings": {
+      "$ref": "processing-result.schema.json#/properties/warnings"
+    },
+    "output_object_key": {
+      "type": "string",
+      "pattern": "^sessions/[0-9a-f-]{36}/timeline\\.json$"
+    },
+    "idempotency_key": { "type": "string", "pattern": "^[a-f0-9]{64}$" }
+  }
+}

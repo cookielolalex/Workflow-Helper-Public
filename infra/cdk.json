@@ -1,0 +1,8 @@
+{
+  "app": "npx ts-node --prefer-ts-exts bin/workflow-helper.ts",
+  "context": {
+    "stage": "dev",
+    "rawRetentionDays": 14,
+    "@aws-cdk/aws-s3:serverAccessLogsUseBucketPolicy": true
+  }
+}

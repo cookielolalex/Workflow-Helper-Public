@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://workflow-helper.local/contracts/processing-job.schema.json",
+  "title": "Content-addressed processing job",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "session_id", "object_key"],
+  "properties": {
+    "schema_version": { "const": "1.0" },
+    "session_id": { "type": "string", "format": "uuid" },
+    "object_key": {
+      "type": "string",
+      "pattern": "^sessions/[0-9a-f-]{36}/packages/[a-f0-9]{64}\\.zip$"
+    }
+  }
+}

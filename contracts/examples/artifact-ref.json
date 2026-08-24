@@ -1,0 +1,9 @@
+{
+  "provider": "google_drive",
+  "file_id": "synthetic-file-id-001",
+  "revision": "synthetic-revision-001",
+  "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "size_bytes": 1024,
+  "mime_type": "application/zip",
+  "role": "raw_package"
+}

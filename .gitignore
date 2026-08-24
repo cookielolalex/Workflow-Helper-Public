@@ -1,0 +1,58 @@
+# Local configuration and credentials
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+service-account*.json
+credentials*.json
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+dist/
+build/
+*.egg-info/
+pip-*/
+
+# Node
+node_modules/
+.next/
+coverage/
+*.tsbuildinfo
+npm-debug.log*
+
+# .NET
+apps/capture-agent/bin/
+apps/capture-agent/obj/
+*.user
+*.suo
+
+# CDK
+cdk.out/
+
+# Capture artifacts must never be committed
+capture-data/
+session-packages/
+*.dwg
+*.dxf
+*.mp4
+*.mkv
+*.webm
+*.zip
+*.pdf
+*.db
+*.sqlite
+*.sqlite3
+
+# Editors and OS
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

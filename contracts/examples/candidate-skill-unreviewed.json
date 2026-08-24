@@ -1,0 +1,77 @@
+{
+  "schema_version": "1.0",
+  "skill_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+  "name": "Align a synthetic enclosure cutout",
+  "description": "Candidate workflow inferred from synthetic evidence and awaiting expert review.",
+  "trigger": {
+    "condition": "A synthetic rectangular cutout is offset from its reference centerline.",
+    "signals": ["cutout present", "reference centerline present"]
+  },
+  "preconditions": ["The cutout and reference centerline are measurable."],
+  "inputs": [
+    {
+      "name": "synthetic_cutout",
+      "kind": "drawing_state",
+      "description": "Synthetic geometry used only for contract validation.",
+      "required": true
+    }
+  ],
+  "relevant_drawing_state": {
+    "description": "A synthetic enclosure face with one cutout and a centerline.",
+    "required_conditions": ["Cutout geometry is editable."],
+    "excluded_conditions": []
+  },
+  "ordered_actions": [
+    {
+      "sequence": 1,
+      "instruction": "Measure the synthetic offset from the centerline.",
+      "parameter_names": ["target_offset_mm"]
+    },
+    {
+      "sequence": 2,
+      "instruction": "Move the synthetic cutout to the candidate target offset.",
+      "parameter_names": ["target_offset_mm"]
+    }
+  ],
+  "parameters": [
+    {
+      "name": "target_offset_mm",
+      "value": 0,
+      "unit": "mm",
+      "provenance": "ai_inferred"
+    }
+  ],
+  "constraints": ["Do not modify geometry outside the synthetic cutout."],
+  "expected_result": {
+    "description": "The synthetic cutout is centered on the reference line.",
+    "observable_outcomes": ["Measured offset equals zero millimetres."]
+  },
+  "validation_checks": [
+    {
+      "description": "Measure the final centerline offset.",
+      "success_criterion": "The absolute offset is zero millimetres."
+    }
+  ],
+  "known_exceptions": [],
+  "supporting_examples": [
+    {
+      "session_id": "11111111-1111-4111-8111-111111111111",
+      "summary": "Synthetic before-and-after timeline for contract validation.",
+      "artifact_references": [
+        {
+          "provider": "google_drive",
+          "file_id": "synthetic-evidence-001",
+          "revision": "revision-001",
+          "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "size_bytes": 512,
+          "mime_type": "application/json",
+          "role": "timeline"
+        }
+      ]
+    }
+  ],
+  "confidence": 0.62,
+  "provenance": "ai_inferred",
+  "approval_status": "unreviewed",
+  "human_approval_evidence": null
+}

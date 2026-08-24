@@ -1,0 +1,56 @@
+{
+  "schema_version": "2.0",
+  "session_id": "11111111-1111-4111-8111-111111111111",
+  "event_count": 4,
+  "meaningful_event_count": 4,
+  "timeline": [
+    {
+      "offset_seconds": 0,
+      "event_type": "drawing_opened",
+      "summary": "Synthetic drawing opened",
+      "source_event_id": "22222222-2222-4222-8222-222222222221"
+    },
+    {
+      "offset_seconds": 1,
+      "event_type": "cad_command",
+      "summary": "Synthetic LINE command observed",
+      "source_event_id": "22222222-2222-4222-8222-222222222222"
+    },
+    {
+      "offset_seconds": 2,
+      "event_type": "cad_command",
+      "summary": "Synthetic TRIM command observed",
+      "source_event_id": "22222222-2222-4222-8222-222222222223"
+    },
+    {
+      "offset_seconds": 3,
+      "event_type": "drawing_saved",
+      "summary": "Synthetic drawing saved",
+      "source_event_id": "22222222-2222-4222-8222-222222222224"
+    }
+  ],
+  "operation_segments": [
+    {
+      "sequence": 1,
+      "start_offset_seconds": 1,
+      "end_offset_seconds": 1,
+      "command_names": ["LINE"],
+      "drawing_ref": "synthetic-drawing-001",
+      "summary": "Observed a synthetic line operation",
+      "source_event_ids": ["22222222-2222-4222-8222-222222222222"]
+    },
+    {
+      "sequence": 2,
+      "start_offset_seconds": 2,
+      "end_offset_seconds": 2,
+      "command_names": ["TRIM"],
+      "drawing_ref": "synthetic-drawing-001",
+      "summary": "Observed a synthetic trim operation",
+      "source_event_ids": ["22222222-2222-4222-8222-222222222223"]
+    }
+  ],
+  "keyframes": [],
+  "warnings": [],
+  "output_object_key": "sessions/11111111-1111-4111-8111-111111111111/timeline-v2.json",
+  "idempotency_key": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+}

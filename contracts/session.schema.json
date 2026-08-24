@@ -1,0 +1,96 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://workflow-helper.local/contracts/session.schema.json",
+  "title": "CAD workflow session",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "session_id",
+    "machine_id",
+    "started_at",
+    "ended_at",
+    "active_duration_seconds",
+    "approved_process",
+    "processing_status",
+    "review_status",
+    "drawing_files",
+    "input_artifacts",
+    "output_artifacts",
+    "cad_events",
+    "idle_intervals",
+    "labels",
+    "skills"
+  ],
+  "properties": {
+    "schema_version": { "const": "1.0" },
+    "session_id": { "type": "string", "format": "uuid" },
+    "machine_id": { "type": "string", "minLength": 8, "maxLength": 128 },
+    "project_id": { "type": ["string", "null"], "maxLength": 128 },
+    "started_at": { "type": "string", "format": "date-time" },
+    "ended_at": { "type": "string", "format": "date-time" },
+    "active_duration_seconds": { "type": "integer", "minimum": 0 },
+    "approved_process": { "type": "string", "maxLength": 128 },
+    "drawing_files": { "$ref": "#/$defs/artifacts" },
+    "input_artifacts": { "$ref": "#/$defs/artifacts" },
+    "output_artifacts": { "$ref": "#/$defs/artifacts" },
+    "recording": {
+      "oneOf": [
+        { "type": "null" },
+        { "$ref": "#/$defs/artifact" }
+      ]
+    },
+    "cad_events": {
+      "type": "array",
+      "items": { "$ref": "event.schema.json" }
+    },
+    "idle_intervals": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["started_at", "ended_at"],
+        "properties": {
+          "started_at": { "type": "string", "format": "date-time" },
+          "ended_at": { "type": "string", "format": "date-time" }
+        }
+      }
+    },
+    "processing_status": {
+      "enum": ["local", "registered", "uploaded", "processing", "processed", "failed"]
+    },
+    "review_status": {
+      "enum": ["not_ready", "pending", "approved", "rejected", "needs_changes"]
+    },
+    "labels": {
+      "type": "array",
+      "items": { "$ref": "label.schema.json" }
+    },
+    "skills": {
+      "type": "array",
+      "items": { "type": "string", "format": "uuid" }
+    },
+    "raw_expires_at": { "type": ["string", "null"], "format": "date-time" }
+  },
+  "$defs": {
+    "artifacts": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/artifact" }
+    },
+    "artifact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["artifact_id", "kind", "file_name", "sha256", "size_bytes"],
+      "properties": {
+        "artifact_id": { "type": "string", "format": "uuid" },
+        "kind": {
+          "enum": ["drawing", "input", "output", "recording", "event_log", "keyframe", "clip", "other"]
+        },
+        "file_name": { "type": "string", "minLength": 1, "maxLength": 255 },
+        "sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+        "size_bytes": { "type": "integer", "minimum": 0 },
+        "storage_key": { "type": ["string", "null"] }
+      }
+    }
+  }
+}

@@ -1,0 +1,26 @@
+version: 2
+updates:
+  - package-ecosystem: pip
+    directory: /apps/api
+    schedule:
+      interval: monthly
+  - package-ecosystem: pip
+    directory: /apps/worker
+    schedule:
+      interval: monthly
+  - package-ecosystem: npm
+    directory: /apps/web
+    schedule:
+      interval: monthly
+  - package-ecosystem: npm
+    directory: /infra
+    schedule:
+      interval: monthly
+  - package-ecosystem: nuget
+    directory: /apps/capture-agent
+    schedule:
+      interval: monthly
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly

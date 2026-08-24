@@ -1,0 +1,27 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://workflow-helper.local/contracts/upload-ticket.schema.json",
+  "title": "Brokered upload ticket",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "provider",
+    "ticket_id",
+    "session_id",
+    "expires_at",
+    "max_bytes",
+    "mime_type",
+    "method"
+  ],
+  "properties": {
+    "schema_version": { "const": "1.0" },
+    "provider": { "enum": ["s3", "google_drive"] },
+    "ticket_id": { "type": "string", "format": "uuid" },
+    "session_id": { "type": "string", "format": "uuid" },
+    "expires_at": { "type": "string", "format": "date-time" },
+    "max_bytes": { "type": "integer", "minimum": 1, "maximum": 536870912 },
+    "mime_type": { "const": "application/zip" },
+    "method": { "enum": ["PUT", "BROKERED_UPLOAD"] }
+  }
+}

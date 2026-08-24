@@ -1,0 +1,118 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://workflow-helper.local/contracts/processing-job-v2-result-manifest-v1.schema.json",
+  "title": "ProcessingJobV2 result digest v1 manifest",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "job_id",
+    "session_id",
+    "payload_digest_scheme",
+    "payload_digest",
+    "outputs"
+  ],
+  "properties": {
+    "schema_version": { "const": "1.0" },
+    "job_id": {
+      "type": "string",
+      "format": "uuid",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+    },
+    "session_id": {
+      "type": "string",
+      "format": "uuid",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+    },
+    "payload_digest_scheme": {
+      "const": "workflow-helper.processing-job-v2.payload.sha256-jcs.v1"
+    },
+    "payload_digest": { "$ref": "#/$defs/lowercase_sha256" },
+    "outputs": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 1024,
+      "items": { "$ref": "#/$defs/output" }
+    }
+  },
+  "$defs": {
+    "lowercase_sha256": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "artifact_common": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "provider",
+        "file_id",
+        "revision",
+        "sha256",
+        "size_bytes",
+        "mime_type",
+        "role"
+      ],
+      "properties": {
+        "provider": { "enum": ["s3", "google_drive"] },
+        "file_id": { "type": "string", "minLength": 1, "maxLength": 1024 },
+        "revision": { "type": "string", "minLength": 1, "maxLength": 255 },
+        "sha256": { "$ref": "#/$defs/lowercase_sha256" },
+        "size_bytes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 536870912
+        },
+        "mime_type": { "enum": ["application/json", "image/png"] },
+        "role": { "enum": ["timeline", "manifest", "crop"] }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "role": { "const": "crop" } }, "required": ["role"] },
+          "then": { "properties": { "mime_type": { "const": "image/png" } } },
+          "else": { "properties": { "mime_type": { "const": "application/json" } } }
+        }
+      ]
+    },
+    "s3_artifact": {
+      "allOf": [
+        { "$ref": "#/$defs/artifact_common" },
+        { "properties": { "provider": { "const": "s3" } } }
+      ]
+    },
+    "google_drive_artifact": {
+      "allOf": [
+        { "$ref": "#/$defs/artifact_common" },
+        { "properties": { "provider": { "const": "google_drive" } } }
+      ]
+    },
+    "output": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["store_namespace", "artifact_ref"],
+      "properties": {
+        "store_namespace": { "type": "string" },
+        "artifact_ref": { "$ref": "#/$defs/artifact_common" }
+      },
+      "oneOf": [
+        {
+          "properties": {
+            "store_namespace": {
+              "type": "string",
+              "pattern": "^google-drive://[A-Za-z0-9_-]{1,128}/[A-Za-z0-9_-]{1,128}$"
+            },
+            "artifact_ref": { "$ref": "#/$defs/google_drive_artifact" }
+          }
+        },
+        {
+          "properties": {
+            "store_namespace": {
+              "type": "string",
+              "pattern": "^aws-s3://(aws|aws-cn|aws-us-gov)/[0-9]{12}/(?=[^/]{1,32}/)[a-z]{2}(-[a-z0-9]+)+-[0-9]/[a-z0-9][a-z0-9-]{1,61}[a-z0-9]$"
+            },
+            "artifact_ref": { "$ref": "#/$defs/s3_artifact" }
+          }
+        }
+      ]
+    }
+  }
+}

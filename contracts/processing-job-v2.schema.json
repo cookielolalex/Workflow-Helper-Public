@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://workflow-helper.local/contracts/processing-job-v2.schema.json",
+  "title": "Provider-neutral processing job",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "job_id", "session_id", "input_artifact"],
+  "properties": {
+    "schema_version": { "const": "2.0" },
+    "job_id": { "type": "string", "format": "uuid" },
+    "session_id": { "type": "string", "format": "uuid" },
+    "input_artifact": {
+      "$ref": "https://workflow-helper.local/contracts/artifact-ref.schema.json"
+    }
+  }
+}

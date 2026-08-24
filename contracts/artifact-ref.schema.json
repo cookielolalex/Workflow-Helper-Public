@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://workflow-helper.local/contracts/artifact-ref.schema.json",
+  "title": "Provider-neutral artifact reference",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "provider",
+    "file_id",
+    "revision",
+    "sha256",
+    "size_bytes",
+    "mime_type",
+    "role"
+  ],
+  "properties": {
+    "provider": { "enum": ["s3", "google_drive"] },
+    "file_id": { "type": "string", "minLength": 1, "maxLength": 1024 },
+    "revision": { "type": "string", "minLength": 1, "maxLength": 255 },
+    "sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+    "size_bytes": { "type": "integer", "minimum": 0, "maximum": 536870912 },
+    "mime_type": { "type": "string", "minLength": 1, "maxLength": 255 },
+    "role": { "enum": ["raw_package", "timeline", "crop", "manifest"] }
+  }
+}

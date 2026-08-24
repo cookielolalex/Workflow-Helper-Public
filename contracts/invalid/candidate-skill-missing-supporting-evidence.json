@@ -1,0 +1,39 @@
+{
+  "schema_version": "1.0",
+  "skill_id": "dddddddd-dddd-4ddd-8ddd-dddddddddddd",
+  "name": "Invalid evidence-free synthetic skill",
+  "description": "Invalid fixture with no immutable supporting evidence.",
+  "trigger": { "condition": "Synthetic condition.", "signals": ["synthetic signal"] },
+  "preconditions": ["Synthetic precondition."],
+  "inputs": [
+    {
+      "name": "synthetic_input",
+      "kind": "drawing_state",
+      "description": "Synthetic input.",
+      "required": true
+    }
+  ],
+  "relevant_drawing_state": {
+    "description": "Synthetic state.",
+    "required_conditions": [],
+    "excluded_conditions": []
+  },
+  "ordered_actions": [
+    { "sequence": 1, "instruction": "Perform a synthetic action.", "parameter_names": [] }
+  ],
+  "parameters": [],
+  "constraints": ["Synthetic constraint."],
+  "expected_result": {
+    "description": "Synthetic result.",
+    "observable_outcomes": ["Synthetic outcome."]
+  },
+  "validation_checks": [
+    { "description": "Synthetic check.", "success_criterion": "Synthetic success." }
+  ],
+  "known_exceptions": [],
+  "supporting_examples": [],
+  "confidence": 0.4,
+  "provenance": "observed",
+  "approval_status": "unreviewed",
+  "human_approval_evidence": null
+}

@@ -1,0 +1,6 @@
+{
+  "event_id": "not-a-uuid",
+  "occurred_at": "not-a-date-time",
+  "event_type": "session_started",
+  "source": "agent"
+}
