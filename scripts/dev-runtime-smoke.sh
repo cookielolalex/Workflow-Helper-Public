@@ -2,9 +2,18 @@
 set -Eeuo pipefail
 
 repository_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+script_path="$repository_root/scripts/dev-runtime-smoke.sh"
+if (( $# == 0 )); then
+  smoke_scenario="needs-changes"
+elif (( $# == 1 )) && [[ "$1" == "--scenario=approved" ]]; then
+  smoke_scenario="approved"
+else
+  echo "Unsupported synthetic smoke scenario." >&2
+  exit 2
+fi
 smoke_dir="$(mktemp -d "${TMPDIR:-/tmp}/workflow-helper-dev-smoke.XXXXXX")"
 runtime_env="$smoke_dir/.env"
-project_name="workflow-helper-p3b-${GITHUB_RUN_ID:-local}-${GITHUB_RUN_ATTEMPT:-0}-$$"
+project_name="workflow-helper-p3b-${smoke_scenario}-${GITHUB_RUN_ID:-local}-${GITHUB_RUN_ATTEMPT:-0}-$$"
 api_port="${WORKFLOW_API_PORT:-18000}"
 web_port="${WORKFLOW_WEB_PORT:-13000}"
 api_base="http://127.0.0.1:${api_port}"
@@ -43,13 +52,22 @@ compose=(
 
 cleanup() {
   status=$?
+  teardown_status=0
   if (( status != 0 )); then
     echo "Synthetic dev-runtime smoke failed; collecting bounded diagnostics." >&2
     "${compose[@]}" ps >&2 || true
     "${compose[@]}" logs --no-color api seed web >&2 || true
   fi
-  "${compose[@]}" down --volumes --remove-orphans >/dev/null 2>&1 || true
-  rm -rf "$smoke_dir"
+  "${compose[@]}" down --volumes --remove-orphans >/dev/null 2>&1 || teardown_status=$?
+  rm -rf "$smoke_dir" || teardown_status=$?
+  trap - EXIT
+  if (( status == 0 && teardown_status != 0 )); then
+    echo "Synthetic smoke teardown did not complete; approved cycle was not started." >&2
+    exit 1
+  fi
+  if (( status == 0 )) && [[ "$smoke_scenario" == "needs-changes" ]]; then
+    exec "$script_path" --scenario=approved
+  fi
   exit "$status"
 }
 trap cleanup EXIT
@@ -246,6 +264,8 @@ if session_links != [session_id]:
     raise SystemExit("synthetic dashboard did not expose exactly one canonical session")
 if 'href="/candidate-review"' not in dashboard:
     raise SystemExit("synthetic dashboard did not link to candidate review")
+if 'href="/approved-workflows"' not in dashboard:
+    raise SystemExit("synthetic dashboard did not link to approved workflows")
 
 detail_required = (
     session_id,
@@ -380,6 +400,258 @@ if re.search(
 if re.search(r"\b[a-f0-9]{64}\b", html, re.IGNORECASE):
     raise SystemExit("candidate review page exposed a digest")
 PY
+
+if [[ "$smoke_scenario" == "approved" ]]; then
+  action_body='ordinal=1&action=approve'
+  status="$({
+    curl --silent --show-error --max-time 10 --max-redirs 0 \
+      --dump-header "$smoke_dir/approved.headers" \
+      --output "$smoke_dir/approved.body" --write-out '%{http_code}' \
+      --request POST "$web_base/candidate-review/action" \
+      --header "Host: 127.0.0.1:$web_port" \
+      --header "Origin: http://127.0.0.1:$web_port" \
+      --header 'Content-Type: application/x-www-form-urlencoded' \
+      --data-binary "$action_body"
+  } || true)"
+  if [[ "$status" != "303" || -s "$smoke_dir/approved.body" ]]; then
+    echo "Approved review action did not return the fixed bodyless 303." >&2
+    exit 1
+  fi
+
+  status="$({
+    curl --silent --show-error --max-time 10 \
+      --output "$smoke_dir/approved-empty.html" --write-out '%{http_code}' \
+      "$web_base/candidate-review"
+  } || true)"
+  if [[ "$status" != "200" ]]; then
+    echo "Approved candidate page returned HTTP $status." >&2
+    exit 1
+  fi
+  status="$({
+    curl --silent --show-error --max-time 10 \
+      --output "$smoke_dir/approved-catalog.html" --write-out '%{http_code}' \
+      "$web_base/approved-workflows"
+  } || true)"
+  if [[ "$status" != "200" ]]; then
+    echo "Approved workflow catalog returned HTTP $status." >&2
+    exit 1
+  fi
+  status="$({
+    curl --silent --show-error --max-time 10 --max-redirs 0 \
+      --dump-header "$smoke_dir/download.headers" \
+      --output "$smoke_dir/download.json" --write-out '%{http_code}' \
+      "$web_base/approved-workflows/download?ordinal=1" \
+      --header "Host: 127.0.0.1:$web_port"
+  } || true)"
+  if [[ "$status" != "200" ]]; then
+    echo "Approved workflow download returned HTTP $status." >&2
+    exit 1
+  fi
+
+  APPROVED_EMPTY_HTML="$smoke_dir/approved-empty.html" \
+  APPROVED_CATALOG_HTML="$smoke_dir/approved-catalog.html" \
+  DOWNLOAD_HEADERS="$smoke_dir/download.headers" \
+  DOWNLOAD_JSON="$smoke_dir/download.json" \
+  CAPTURE_PROOF="$capture_proof" \
+  WORKER_PROOF="$worker_proof" \
+  REVIEWER_PROOF="$reviewer_proof" \
+  REVIEWER_SESSION="$reviewer_session" \
+  REVIEWER_CSRF="$reviewer_csrf" \
+  python3 - <<'PY'
+import json
+import os
+import re
+from html import unescape
+from html.parser import HTMLParser
+from pathlib import Path
+
+
+class VisibleTextParser(HTMLParser):
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.hidden_depth = 0
+        self.parts = []
+
+    def handle_starttag(self, tag, attrs):
+        if tag.casefold() in {"script", "style"}:
+            self.hidden_depth += 1
+
+    def handle_endtag(self, tag):
+        if tag.casefold() in {"script", "style"} and self.hidden_depth:
+            self.hidden_depth -= 1
+
+    def handle_data(self, data):
+        if not self.hidden_depth:
+            self.parts.append(data)
+
+
+def visible_text(value):
+    parser = VisibleTextParser()
+    parser.feed(value)
+    parser.close()
+    return " ".join(unescape(" ".join(parser.parts)).split())
+
+
+empty_html = Path(os.environ["APPROVED_EMPTY_HTML"]).read_text(encoding="utf-8")
+catalog_html = Path(os.environ["APPROVED_CATALOG_HTML"]).read_text(encoding="utf-8")
+empty_visible = visible_text(empty_html)
+catalog_visible = visible_text(catalog_html)
+if "No candidates awaiting review." not in empty_visible or "approved" not in empty_visible:
+    raise SystemExit("approved decision did not leave an empty active queue")
+for expected in (
+    "Approved workflows",
+    "Approved workflow 1",
+    "LINE → TRIM → LINE → TRIM",
+    "observed / approved",
+    "Download JSON",
+):
+    if expected not in catalog_visible:
+        raise SystemExit("approved workflow catalog visible evidence was incomplete")
+
+headers = Path(os.environ["DOWNLOAD_HEADERS"]).read_text(encoding="iso-8859-1")
+header_values = {}
+for line in headers.splitlines():
+    if ":" in line:
+        name, value = line.split(":", 1)
+        header_values.setdefault(name.casefold(), []).append(value.strip())
+expected_headers = {
+    "cache-control": ["no-store"],
+    "content-disposition": ['attachment; filename="approved-workflow.json"'],
+    "content-type": ["application/json; charset=utf-8"],
+    "referrer-policy": ["no-referrer"],
+    "x-content-type-options": ["nosniff"],
+}
+for name, expected in expected_headers.items():
+    if header_values.get(name) != expected:
+        raise SystemExit("approved workflow download headers were not exact")
+
+download_path = Path(os.environ["DOWNLOAD_JSON"])
+raw = download_path.read_bytes()
+if not raw.endswith(b"\n") or len(raw) > 65_536:
+    raise SystemExit("approved workflow download bytes were not bounded")
+if header_values.get("content-length") != [str(len(raw))]:
+    raise SystemExit("approved workflow download length was not exact")
+payload = json.loads(raw.decode("utf-8"))
+if (
+    set(payload) != {
+        "schema",
+        "version",
+        "command_sequence",
+        "occurrence_count",
+        "provenance",
+        "approval_status",
+        "decided_at",
+    }
+    or payload.get("schema") != "workflow-helper.approved-workflow"
+    or payload.get("version") != "1.0"
+    or payload.get("command_sequence") != ["LINE", "TRIM", "LINE", "TRIM"]
+    or payload.get("occurrence_count") != 4
+    or payload.get("provenance") != "observed"
+    or payload.get("approval_status") != "approved"
+    or type(payload.get("decided_at")) is not str
+):
+    raise SystemExit("approved workflow download schema was not exact")
+
+for surface in (empty_html, catalog_html, raw.decode("utf-8")):
+    for value in (
+        os.environ["CAPTURE_PROOF"],
+        os.environ["WORKER_PROOF"],
+        os.environ["REVIEWER_PROOF"],
+        os.environ["REVIEWER_SESSION"],
+        os.environ["REVIEWER_CSRF"],
+        "publication_key",
+        "review_target_id",
+        "reason_code",
+    ):
+        if value in surface:
+            raise SystemExit("approved workflow surface exposed private server evidence")
+    if re.search(r"candidate-(?:publication|skill):", surface, re.IGNORECASE):
+        raise SystemExit("approved workflow surface exposed a raw candidate identifier")
+    if re.search(
+        r"\b[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\b",
+        surface,
+        re.IGNORECASE,
+    ):
+        raise SystemExit("approved workflow surface exposed a UUID")
+    if re.search(r"\b[a-f0-9]{64}\b", surface, re.IGNORECASE):
+        raise SystemExit("approved workflow surface exposed a digest")
+PY
+  approved_decided_at="$(DOWNLOAD_JSON="$smoke_dir/download.json" python3 - <<'PY'
+import json
+import os
+from pathlib import Path
+
+print(json.loads(Path(os.environ["DOWNLOAD_JSON"]).read_text(encoding="utf-8"))["decided_at"])
+PY
+)"
+
+  if ! "${compose[@]}" run --rm --no-deps -T \
+    -e "EXPECTED_DECIDED_AT=$approved_decided_at" seed python - \
+    >"$smoke_dir/independent-approved-verify.log" <<'PY'
+import runpy
+from datetime import UTC, datetime
+
+from workflow_api import dev_server
+
+seed = runpy.run_path("/workspace/dev-runtime-seed.py")
+driver = seed["_ASGIDriver"](dev_server.open_existing_app())
+headers = seed["_reviewer_headers"]()
+queue = driver.request(
+    "GET",
+    "/v1/control/candidate-publications/review-queue",
+    headers=headers,
+)
+outcomes = driver.request(
+    "GET",
+    "/v1/control/candidate-publications/review-outcomes",
+    headers=headers,
+)
+queue_payload = queue.json()
+outcome_payload = outcomes.json()
+item = outcome_payload.get("items", [None])[0]
+if (
+    queue.status != 200
+    or queue_payload != {"items": [], "count": 0}
+    or outcomes.status != 200
+    or type(outcome_payload) is not dict
+    or set(outcome_payload) != {"items", "count"}
+    or outcome_payload.get("count") != 1
+    or type(item) is not dict
+    or set(item) != {
+        "command_sequence",
+        "occurrence_count",
+        "provenance",
+        "review_status",
+        "decided_at_us",
+    }
+    or item.get("command_sequence") != ["LINE", "TRIM", "LINE", "TRIM"]
+    or item.get("occurrence_count") != 4
+    or item.get("provenance") != "observed"
+    or item.get("review_status") != "approved"
+    or type(item.get("decided_at_us")) is not int
+    or item["decided_at_us"] <= 0
+):
+    raise SystemExit("independent approved workflow verification failed")
+expected = (
+    datetime.fromtimestamp(item["decided_at_us"] / 1_000_000, tz=UTC)
+    .isoformat(timespec="milliseconds")
+    .replace("+00:00", "Z")
+)
+if expected != __import__("os").environ.get("EXPECTED_DECIDED_AT"):
+    raise SystemExit("independent approved decision time verification failed")
+print("synthetic approved workflow durability verified")
+PY
+  then
+    echo "Independent approved workflow durability verification failed." >&2
+    exit 1
+  fi
+  if [[ "$(cat "$smoke_dir/independent-approved-verify.log")" != "synthetic approved workflow durability verified" ]]; then
+    echo "Independent approved workflow durability verification was not exact." >&2
+    exit 1
+  fi
+  echo "Synthetic approved-workflow smoke passed: durable approval, empty active queue, safe catalog export, and independent reopen."
+  exit 0
+fi
 
 action_body='ordinal=1&action=start_review'
 status="$({

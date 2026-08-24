@@ -8,6 +8,7 @@ import type { CandidateReviewOutcomesView, CandidateReviewView } from "./candida
 
 const MAX_JSON_BYTES = 262_144;
 const MAX_ACTION_BYTES = 64;
+const MAX_APPROVED_EXPORT_BYTES = 65_536;
 const API_ORIGIN = "https://review.synthetic.example";
 const DEV_ENVIRONMENTS = new Set(["development", "dev", "local", "test"]);
 const TOKEN_PATTERN = /^[A-Za-z0-9._:-]{32,256}$/;
@@ -59,6 +60,20 @@ export type CandidateReviewActionResult =
   | "success"
   | "conflict"
   | "unavailable";
+
+export type ApprovedWorkflowRow = Readonly<{
+  ordinal: number;
+  command_sequence: readonly string[];
+  occurrence_count: number;
+  provenance: "observed";
+  approval_status: "approved";
+  decided_at: string;
+}>;
+
+export type ApprovedWorkflowsView =
+  | Readonly<{ status: "unavailable" }>
+  | Readonly<{ status: "empty" }>
+  | Readonly<{ status: "populated"; rows: readonly ApprovedWorkflowRow[] }>;
 
 function canonicalMaterial(value: unknown): value is string {
   if (typeof value !== "string" || !MATERIAL_PATTERN.test(value)) return false;
@@ -301,6 +316,110 @@ export async function loadCandidateReviewOutcomes(
   );
   if (cached === null) return { status: "unavailable" };
   return readCandidateReviewOutcomes(() => cached);
+}
+
+/** Project the existing sealed outcomes route into an approved-only catalog. */
+export async function loadApprovedWorkflows(
+  fetcher: typeof fetch = fetch,
+): Promise<ApprovedWorkflowsView> {
+  const outcomes = await loadCandidateReviewOutcomes(fetcher);
+  if (outcomes.status === "unavailable") return { status: "unavailable" };
+  if (outcomes.status === "empty") return { status: "empty" };
+  const rows = outcomes.rows
+    .filter((row) => row.review_status === "approved")
+    .map((row, index) => Object.freeze({
+      ordinal: index + 1,
+      command_sequence: Object.freeze([...row.command_sequence]),
+      occurrence_count: row.occurrence_count,
+      provenance: "observed" as const,
+      approval_status: "approved" as const,
+      decided_at: row.decided_at,
+    }));
+  return rows.length === 0
+    ? { status: "empty" }
+    : { status: "populated", rows: Object.freeze(rows) };
+}
+
+function approvedDownloadOrdinal(request: Request, config: ServerConfig): number | null {
+  try {
+    const url = new URL(request.url);
+    const match = /^\?ordinal=([1-9][0-9]?|100)$/.exec(url.search);
+    if (
+      request.method !== "GET" ||
+      request.body !== null ||
+      url.pathname !== "/approved-workflows/download" ||
+      url.hash !== "" ||
+      request.headers.get("host") !== config.browserHost ||
+      request.headers.has("content-type") ||
+      request.headers.has("content-length") ||
+      request.headers.has("cookie") ||
+      request.headers.has("authorization") ||
+      request.headers.has("x-workflow-dev-proof") ||
+      request.headers.has("x-workflow-dev-reviewer-proof") ||
+      request.headers.has("x-csrf-token") ||
+      match === null
+    ) {
+      return null;
+    }
+    return Number(match[1]);
+  } catch {
+    return null;
+  }
+}
+
+function approvedDownloadNotFound(): Response {
+  return new Response(null, {
+    status: 404,
+    headers: {
+      "cache-control": "no-store",
+      "content-length": "0",
+      "referrer-policy": "no-referrer",
+      "x-content-type-options": "nosniff",
+    },
+  });
+}
+
+/** Re-fetch an approved ordinal server-side and emit one bounded safe export. */
+export async function downloadApprovedWorkflow(
+  request: Request,
+  fetcher: typeof fetch = fetch,
+): Promise<Response> {
+  try {
+    const config = serverConfig();
+    if (config === null) return approvedDownloadNotFound();
+    const ordinal = approvedDownloadOrdinal(request, config);
+    if (ordinal === null) return approvedDownloadNotFound();
+    const catalog = await loadApprovedWorkflows(fetcher);
+    if (catalog.status !== "populated") return approvedDownloadNotFound();
+    const row = catalog.rows[ordinal - 1];
+    if (row === undefined) return approvedDownloadNotFound();
+    const payload = {
+      schema: "workflow-helper.approved-workflow",
+      version: "1.0",
+      command_sequence: [...row.command_sequence],
+      occurrence_count: row.occurrence_count,
+      provenance: "observed",
+      approval_status: "approved",
+      decided_at: row.decided_at,
+    };
+    const bytes = new TextEncoder().encode(`${JSON.stringify(payload)}\n`);
+    if (bytes.byteLength > MAX_APPROVED_EXPORT_BYTES) {
+      return approvedDownloadNotFound();
+    }
+    return new Response(bytes, {
+      status: 200,
+      headers: {
+        "cache-control": "no-store",
+        "content-disposition": 'attachment; filename="approved-workflow.json"',
+        "content-length": String(bytes.byteLength),
+        "content-type": "application/json; charset=utf-8",
+        "referrer-policy": "no-referrer",
+        "x-content-type-options": "nosniff",
+      },
+    });
+  } catch {
+    return approvedDownloadNotFound();
+  }
 }
 
 function rawItem(value: unknown, ordinal: number): Record<string, unknown> | null {
