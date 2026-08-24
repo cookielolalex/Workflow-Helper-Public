@@ -13,7 +13,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=8.3,<9", "ruff>=0.8,<1"]
+dev = ["pytest>=8.3,<10", "ruff>=0.8,<1"]
 
 [project.scripts]
 workflow-helper-worker = "workflow_worker.main:main"
