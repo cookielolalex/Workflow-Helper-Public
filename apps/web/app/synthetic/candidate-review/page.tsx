@@ -6,7 +6,7 @@ import {
 
 const syntheticTransport: CandidateReviewTransport = () => ({
   status: 200,
-  body: { items: [], count: 0, next_cursor: null },
+  body: { items: [], count: 0 },
 });
 
 export default function CandidateReviewPreviewPage() {
