@@ -24,7 +24,53 @@ public sealed class SyntheticPilotRunnerTests
         Assert.Equal(SyntheticPilotRunner.PilotSessionId, writer.Session.SessionId);
         Assert.Equal("synthetic-pilot-machine", writer.Session.MachineId);
         Assert.Null(writer.Session.WindowFingerprint);
-        Assert.Equal(3, writer.Session.CadEvents.Count);
+        Assert.Equal(
+            [
+                "session_started",
+                "drawing_opened",
+                "cad_command",
+                "cad_command",
+                "drawing_saved",
+                "session_ended",
+            ],
+            writer.Session.CadEvents.Select(value => value.EventType));
+        Assert.Equal(
+            [0, 5, 20, 35, 50, 60],
+            writer.Session.CadEvents
+                .Select(value => (int)(value.OccurredAt - writer.Session.CadEvents[0].OccurredAt).TotalSeconds));
+        Assert.Equal(
+            [null, null, "LINE", "TRIM", null, null],
+            writer.Session.CadEvents.Select(value => value.CommandName));
+        Assert.Equal(
+            [
+                null,
+                "synthetic-drawing-001",
+                "synthetic-drawing-001",
+                "synthetic-drawing-001",
+                "synthetic-drawing-001",
+                null,
+            ],
+            writer.Session.CadEvents.Select(value => value.DrawingRef));
+        Assert.Equal(1, writer.Session.InputArtifacts?.Count);
+        Assert.Equal(1, writer.Session.OutputArtifacts?.Count);
+        var input = Assert.Single(writer.Session.InputArtifacts!);
+        Assert.Equal(SyntheticPilotRunner.BeforeArtifactId, input.ArtifactId);
+        Assert.Equal("input", input.Kind);
+        Assert.Equal("synthetic-before.json", input.FileName);
+        Assert.Equal(
+            "37c13fc0765424f6d94fa90c04aac1f03dfb693ec91c0b5e9083de465fadec30",
+            input.Sha256);
+        Assert.Equal(36, input.SizeBytes);
+        Assert.Null(input.StorageKey);
+        var output = Assert.Single(writer.Session.OutputArtifacts!);
+        Assert.Equal(SyntheticPilotRunner.AfterArtifactId, output.ArtifactId);
+        Assert.Equal("output", output.Kind);
+        Assert.Equal("synthetic-after.json", output.FileName);
+        Assert.Equal(
+            "797d708b02d246269d7a774480ee876feb5c885e033c6b5de5475f8b40cdb4b7",
+            output.Sha256);
+        Assert.Equal(35, output.SizeBytes);
+        Assert.Null(output.StorageKey);
         Assert.All(writer.Session.CadEvents, value =>
         {
             Assert.True(value.Details.TryGetValue("synthetic", out var marker));

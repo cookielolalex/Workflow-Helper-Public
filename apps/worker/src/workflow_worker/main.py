@@ -311,7 +311,7 @@ def process_message_v2(
     s3: Any | None = None,
     completion_callback: Callable[[ProcessingCompletionV2], None] = post_completion,
 ) -> ProcessingCompletionV2:
-    """Produce v2 only when called explicitly; the queue loop remains v1-only."""
+    """Process an existing v1 queue envelope and publish the v2 result."""
     job = ProcessingJob.model_validate_json(body)
     raw_bucket = os.environ["RAW_BUCKET"]
     processed_bucket = os.environ["PROCESSED_BUCKET"]
@@ -330,7 +330,7 @@ def process_message_v2(
     completion = completion_for_v2(result, output_key)
     completion_callback(completion)
     LOGGER.info(
-        "processed dormant v2 session %s with %s operation segments",
+        "processed v2 session %s with %s operation segments",
         job.session_id,
         len(result.operation_segments),
     )
@@ -374,7 +374,7 @@ def run_forever() -> None:
         for message in response.get("Messages", []):
             receive_count = int(message.get("Attributes", {}).get("ApproximateReceiveCount", "1"))
             try:
-                process_message(message["Body"])
+                process_message_v2(message["Body"])
             except Exception:
                 LOGGER.exception(
                     "processing failed on attempt %s/%s",

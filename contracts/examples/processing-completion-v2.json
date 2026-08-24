@@ -1,56 +1,76 @@
 {
   "schema_version": "2.0",
-  "session_id": "11111111-1111-4111-8111-111111111111",
-  "event_count": 4,
-  "meaningful_event_count": 4,
+  "session_id": "d6d9e5b7-c9bc-4eb1-ae4a-1a14ed5b1350",
+  "event_count": 6,
+  "meaningful_event_count": 6,
   "timeline": [
     {
-      "offset_seconds": 0,
+      "offset_seconds": 0.0,
+      "event_type": "session_started",
+      "summary": "Approved CAD session started",
+      "source_event_id": "f74d30dd-9945-4291-8ae9-95658379b335"
+    },
+    {
+      "offset_seconds": 5.0,
       "event_type": "drawing_opened",
-      "summary": "Synthetic drawing opened",
-      "source_event_id": "22222222-2222-4222-8222-222222222221"
+      "summary": "Drawing opened",
+      "source_event_id": "1e6e2db8-c50a-4cd2-b122-381e3f20640f"
     },
     {
-      "offset_seconds": 1,
+      "offset_seconds": 20.0,
       "event_type": "cad_command",
-      "summary": "Synthetic LINE command observed",
-      "source_event_id": "22222222-2222-4222-8222-222222222222"
+      "summary": "AutoCAD command: LINE",
+      "source_event_id": "9ef08077-1fd0-468c-bf68-1f8f1ef23c4e"
     },
     {
-      "offset_seconds": 2,
+      "offset_seconds": 35.0,
       "event_type": "cad_command",
-      "summary": "Synthetic TRIM command observed",
-      "source_event_id": "22222222-2222-4222-8222-222222222223"
+      "summary": "AutoCAD command: TRIM",
+      "source_event_id": "7482f72e-0b68-4535-bf65-f234a460e376"
     },
     {
-      "offset_seconds": 3,
+      "offset_seconds": 50.0,
       "event_type": "drawing_saved",
-      "summary": "Synthetic drawing saved",
-      "source_event_id": "22222222-2222-4222-8222-222222222224"
+      "summary": "Drawing saved",
+      "source_event_id": "a21f79d6-cb3c-41c4-b5f0-1f0a883fde45"
+    },
+    {
+      "offset_seconds": 60.0,
+      "event_type": "session_ended",
+      "summary": "Approved CAD session ended",
+      "source_event_id": "3cb65614-3f9d-4e19-bac1-133fbdda9a54"
     }
   ],
   "operation_segments": [
     {
       "sequence": 1,
-      "start_offset_seconds": 1,
-      "end_offset_seconds": 1,
-      "command_names": ["LINE"],
+      "start_offset_seconds": 20.0,
+      "end_offset_seconds": 20.0,
+      "command_names": [
+        "LINE"
+      ],
       "drawing_ref": "synthetic-drawing-001",
-      "summary": "Observed a synthetic line operation",
-      "source_event_ids": ["22222222-2222-4222-8222-222222222222"]
+      "summary": "AutoCAD command: LINE",
+      "source_event_ids": [
+        "9ef08077-1fd0-468c-bf68-1f8f1ef23c4e"
+      ]
     },
     {
       "sequence": 2,
-      "start_offset_seconds": 2,
-      "end_offset_seconds": 2,
-      "command_names": ["TRIM"],
+      "start_offset_seconds": 35.0,
+      "end_offset_seconds": 35.0,
+      "command_names": [
+        "TRIM"
+      ],
       "drawing_ref": "synthetic-drawing-001",
-      "summary": "Observed a synthetic trim operation",
-      "source_event_ids": ["22222222-2222-4222-8222-222222222223"]
+      "summary": "AutoCAD command: TRIM",
+      "source_event_ids": [
+        "7482f72e-0b68-4535-bf65-f234a460e376"
+      ]
     }
   ],
   "keyframes": [],
   "warnings": [],
-  "output_object_key": "sessions/11111111-1111-4111-8111-111111111111/timeline-v2.json",
-  "idempotency_key": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+  "output_object_key": "sessions/d6d9e5b7-c9bc-4eb1-ae4a-1a14ed5b1350/timeline-v2.json",
+  "idempotency_key": "b4684330d8898f37641b78a38669369a4ed3c80f98fc5ac7d5bb0ce14eac02e6"
 }

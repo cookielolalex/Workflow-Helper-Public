@@ -1,25 +1,88 @@
 {
   "schema_version": "1.0",
-  "session_id": "11111111-1111-4111-8111-111111111111",
-  "machine_id": "machine-demo-001",
-  "project_id": "synthetic-pilot",
-  "started_at": "2026-08-16T04:00:00Z",
-  "ended_at": "2026-08-16T04:03:00Z",
-  "active_duration_seconds": 180,
+  "session_id": "d6d9e5b7-c9bc-4eb1-ae4a-1a14ed5b1350",
+  "machine_id": "synthetic-pilot-machine",
+  "project_id": null,
+  "started_at": "2026-08-17T00:00:00Z",
+  "ended_at": "2026-08-17T00:01:00Z",
+  "active_duration_seconds": 60,
   "approved_process": "acad",
   "drawing_files": [],
-  "input_artifacts": [],
-  "output_artifacts": [],
+  "input_artifacts": [
+    {
+      "artifact_id": "44444444-4444-4444-8444-444444444444",
+      "kind": "input",
+      "file_name": "synthetic-before.json",
+      "sha256": "37c13fc0765424f6d94fa90c04aac1f03dfb693ec91c0b5e9083de465fadec30",
+      "size_bytes": 36,
+      "storage_key": null
+    }
+  ],
+  "output_artifacts": [
+    {
+      "artifact_id": "55555555-5555-4555-8555-555555555555",
+      "kind": "output",
+      "file_name": "synthetic-after.json",
+      "sha256": "797d708b02d246269d7a774480ee876feb5c885e033c6b5de5475f8b40cdb4b7",
+      "size_bytes": 35,
+      "storage_key": null
+    }
+  ],
   "recording": null,
   "cad_events": [
     {
-      "event_id": "22222222-2222-4222-8222-222222222222",
-      "occurred_at": "2026-08-16T04:00:00Z",
+      "event_id": "f74d30dd-9945-4291-8ae9-95658379b335",
+      "occurred_at": "2026-08-17T00:00:00Z",
       "event_type": "session_started",
       "source": "agent",
       "command_name": null,
       "drawing_ref": null,
-      "details": { "fixture": true }
+      "details": { "synthetic": true }
+    },
+    {
+      "event_id": "1e6e2db8-c50a-4cd2-b122-381e3f20640f",
+      "occurred_at": "2026-08-17T00:00:05Z",
+      "event_type": "drawing_opened",
+      "source": "autocad",
+      "command_name": null,
+      "drawing_ref": "synthetic-drawing-001",
+      "details": { "synthetic": true }
+    },
+    {
+      "event_id": "9ef08077-1fd0-468c-bf68-1f8f1ef23c4e",
+      "occurred_at": "2026-08-17T00:00:20Z",
+      "event_type": "cad_command",
+      "source": "autocad",
+      "command_name": "LINE",
+      "drawing_ref": "synthetic-drawing-001",
+      "details": { "synthetic": true }
+    },
+    {
+      "event_id": "7482f72e-0b68-4535-bf65-f234a460e376",
+      "occurred_at": "2026-08-17T00:00:35Z",
+      "event_type": "cad_command",
+      "source": "autocad",
+      "command_name": "TRIM",
+      "drawing_ref": "synthetic-drawing-001",
+      "details": { "synthetic": true }
+    },
+    {
+      "event_id": "a21f79d6-cb3c-41c4-b5f0-1f0a883fde45",
+      "occurred_at": "2026-08-17T00:00:50Z",
+      "event_type": "drawing_saved",
+      "source": "autocad",
+      "command_name": null,
+      "drawing_ref": "synthetic-drawing-001",
+      "details": { "synthetic": true }
+    },
+    {
+      "event_id": "3cb65614-3f9d-4e19-bac1-133fbdda9a54",
+      "occurred_at": "2026-08-17T00:01:00Z",
+      "event_type": "session_ended",
+      "source": "agent",
+      "command_name": null,
+      "drawing_ref": null,
+      "details": { "synthetic": true }
     }
   ],
   "idle_intervals": [],

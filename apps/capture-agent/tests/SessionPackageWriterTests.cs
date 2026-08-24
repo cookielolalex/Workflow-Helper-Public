@@ -29,10 +29,12 @@ public sealed class SessionPackageWriterTests
 
         using var archive = ZipFile.OpenRead(package.FilePath);
         Assert.Equal(
-            ["events.jsonl", "metadata.json"],
-            archive.Entries.Select(value => value.FullName).OrderBy(value => value));
+            ["metadata.json", "events.jsonl"],
+            archive.Entries.Select(value => value.FullName));
         using var metadata = await ReadMetadataAsync(archive);
         Assert.Equal(JsonValueKind.Null, metadata.RootElement.GetProperty("recording").ValueKind);
+        Assert.Single(metadata.RootElement.GetProperty("input_artifacts").EnumerateArray());
+        Assert.Single(metadata.RootElement.GetProperty("output_artifacts").EnumerateArray());
     }
 
     [Fact]
@@ -196,6 +198,41 @@ public sealed class SessionPackageWriterTests
         Assert.Equal(
             firstRecording,
             await ReadEntryBytesAsync(secondArchive, "recordings/recording.bin"));
+    }
+
+    [Fact]
+    public async Task SyntheticPackageWithoutRecordingIsByteIdenticalAcrossRoots()
+    {
+        var session = SyntheticPilotRunner.CreateSyntheticSession();
+        byte[] firstZip;
+        PackageDescriptor firstPackage;
+        using (var first = new PackageWriterFixture())
+        {
+            firstPackage = await first.Writer.WriteAsync(
+                session,
+                null,
+                CancellationToken.None);
+            firstZip = await File.ReadAllBytesAsync(firstPackage.FilePath);
+            using var archive = ZipFile.OpenRead(firstPackage.FilePath);
+            Assert.Equal(
+                ["metadata.json", "events.jsonl"],
+                archive.Entries.Select(value => value.FullName));
+            Assert.DoesNotContain(
+                archive.Entries,
+                value => value.FullName.StartsWith("recordings/", StringComparison.Ordinal));
+        }
+
+        await Task.Delay(TimeSpan.FromMilliseconds(2200));
+
+        using var second = new PackageWriterFixture();
+        var secondPackage = await second.Writer.WriteAsync(
+            session,
+            null,
+            CancellationToken.None);
+
+        Assert.Equal(firstZip, await File.ReadAllBytesAsync(secondPackage.FilePath));
+        Assert.Equal(firstPackage.Sha256, secondPackage.Sha256);
+        Assert.Equal(firstPackage.SizeBytes, secondPackage.SizeBytes);
     }
 
     [Fact]
@@ -466,15 +503,33 @@ public sealed class SessionPackageWriterTests
         4,
         "acad",
         "synthetic-window",
-        [
-            new CadEvent(
+            [
+                new CadEvent(
                 Guid.Parse("53eadbb8-e039-4b4c-9cf6-4054945e42d6"),
                 DateTimeOffset.Parse("2026-08-16T04:00:00Z"),
                 "session_started",
                 "agent",
                 null,
                 null,
-                new Dictionary<string, object?>()),
+                    new Dictionary<string, object?>()),
+        ],
+        [
+            new CaptureArtifact(
+                Guid.Parse("44444444-4444-4444-8444-444444444444"),
+                "input",
+                "synthetic-before.json",
+                "37c13fc0765424f6d94fa90c04aac1f03dfb693ec91c0b5e9083de465fadec30",
+                36,
+                null),
+        ],
+        [
+            new CaptureArtifact(
+                Guid.Parse("55555555-5555-4555-8555-555555555555"),
+                "output",
+                "synthetic-after.json",
+                "797d708b02d246269d7a774480ee876feb5c885e033c6b5de5475f8b40cdb4b7",
+                35,
+                null),
         ]);
 
     private static async Task<JsonDocument> ReadMetadataAsync(ZipArchive archive)

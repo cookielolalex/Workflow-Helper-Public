@@ -9,7 +9,9 @@ public sealed record CaptureSession(
     int ActiveDurationSeconds,
     string ApprovedProcess,
     string? WindowFingerprint,
-    IReadOnlyList<CadEvent> CadEvents)
+    IReadOnlyList<CadEvent> CadEvents,
+    IReadOnlyList<CaptureArtifact>? InputArtifacts = null,
+    IReadOnlyList<CaptureArtifact>? OutputArtifacts = null)
 {
     public static CaptureSession Start(
         string machineId,
@@ -85,6 +87,14 @@ public sealed record CadEvent(
         new(Guid.NewGuid(), occurredAt, eventType, "agent", null, null,
             new Dictionary<string, object?>());
 }
+
+public sealed record CaptureArtifact(
+    Guid ArtifactId,
+    string Kind,
+    string FileName,
+    string Sha256,
+    long SizeBytes,
+    string? StorageKey);
 
 public sealed record ApprovedWindowContext(
     int ProcessId,

@@ -681,7 +681,7 @@ def test_queue_service_failures_exit_after_bounded_retries(monkeypatch) -> None:
     assert sqs.attempts == 3
 
 
-def test_queue_loop_remains_v1_only_without_a_v2_selector(monkeypatch) -> None:
+def test_queue_loop_uses_v2_once_and_deletes_after_success(monkeypatch) -> None:
     class OneMessageSqs:
         receives = 0
         deletes = 0
@@ -708,18 +708,54 @@ def test_queue_loop_remains_v1_only_without_a_v2_selector(monkeypatch) -> None:
     monkeypatch.setenv("PROCESSING_QUEUE_URL", "http://localstack/queue")
     monkeypatch.setenv("WORKER_MAX_SERVICE_FAILURES", "1")
     monkeypatch.setattr(worker_main, "_client", lambda service: sqs)
-    monkeypatch.setattr(worker_main, "process_message", processed.append)
-    monkeypatch.setattr(
-        worker_main,
-        "process_message_v2",
-        lambda body: pytest.fail("run_forever must not select dormant v2"),
-    )
+    monkeypatch.setattr(worker_main, "process_message_v2", processed.append)
 
     with pytest.raises(RuntimeError, match="bounded synthetic stop"):
         worker_main.run_forever()
 
     assert processed == ["synthetic-v1-job"]
     assert sqs.deletes == 1
+
+
+def test_queue_loop_does_not_delete_after_v2_failure(monkeypatch) -> None:
+    class OneMessageSqs:
+        receives = 0
+        deletes = 0
+
+        def receive_message(self, **kwargs):
+            self.receives += 1
+            if self.receives == 1:
+                return {
+                    "Messages": [
+                        {
+                            "Body": "synthetic-v1-job",
+                            "ReceiptHandle": "synthetic-receipt",
+                            "Attributes": {"ApproximateReceiveCount": "1"},
+                        }
+                    ]
+                }
+            raise RuntimeError("bounded synthetic stop")
+
+        def delete_message(self, **kwargs):
+            self.deletes += 1
+
+    sqs = OneMessageSqs()
+    processed = []
+    monkeypatch.setenv("PROCESSING_QUEUE_URL", "http://localstack/queue")
+    monkeypatch.setenv("WORKER_MAX_SERVICE_FAILURES", "1")
+    monkeypatch.setattr(worker_main, "_client", lambda service: sqs)
+
+    def fail_v2(body):
+        processed.append(body)
+        raise RuntimeError("synthetic v2 failure")
+
+    monkeypatch.setattr(worker_main, "process_message_v2", fail_v2)
+
+    with pytest.raises(RuntimeError, match="bounded synthetic stop"):
+        worker_main.run_forever()
+
+    assert processed == ["synthetic-v1-job"]
+    assert sqs.deletes == 0
 
 
 def test_completion_callback_retries_and_sends_worker_token(monkeypatch) -> None:
