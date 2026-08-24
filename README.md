@@ -66,9 +66,11 @@ This activation does not change the image default: `workflow_api.main:app`
 still installs no runtime bundle, performs no discovery, and leaves protected
 routes fail closed. PostgreSQL and LocalStack remain compatibility services in
 the Compose topology; the activated slice uses six component-local SQLite
-stores and an in-memory S3 oracle instead. The ordinary dashboard and session
-detail pages still mask API failures as empty or not found, so only the bounded
-candidate-review smoke is development-readiness evidence.
+stores and an in-memory S3 oracle instead. The dashboard and session detail use
+the same server-only synthetic reviewer boundary, strictly project the session
+and v2 timeline responses, distinguish unavailable state from absence, and link
+to the candidate-review route. The bounded development smoke proves that exact
+dashboard → session → timeline/segments → candidate-review path.
 
 Run the dependency-light checks with:
 

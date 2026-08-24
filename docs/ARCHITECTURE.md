@@ -98,11 +98,15 @@ non-fresh data paths before constructing the bundle. Fixed synthetic principals,
 scopes, policies, and authenticator/workload factories are created only inside
 that guarded factory; raw proof material is not persisted.
 
-The web app calls the session plane but catches non-success responses and
-network failures. Its dashboard renders an empty session list; its detail route
-renders not found. It does not distinguish service unavailability from genuine
-absence. Phase 1 owns an explicit unavailable/error state; until then, web
-emptiness is not readiness or successful readback evidence.
+The development dashboard and session detail now call the session plane only
+through the existing server-only synthetic reviewer boundary. That boundary
+accepts one of three fixed GET descriptors (list, canonical-UUID detail, or
+canonical-UUID timeline), attaches the fixed synthetic authority internally,
+and performs bounded redirect-safe JSON reads. Strict projection rejects
+unknown keys and invalid count, identity, date, number, array, or v2 segment
+semantics. The pages distinguish unavailable state from genuine absence and
+link to the candidate-review route. No browser credential or arbitrary API path
+crosses this boundary.
 
 ## P3b development review activation
 
@@ -289,11 +293,12 @@ review state. No Site deployment is authorized by this code-only package.
 ### Current web scaffold
 
 The checked Next.js app is a local scaffold, not the intended ChatGPT Site. Its
-dashboard and detail pages still mask API unavailability as empty or not found.
-Only the explicit development candidate-review route is activated: it uses
-server-only synthetic reviewer/session material, renders redacted records, and
-submits ordinal actions through its same-origin server route. It is not a live
-identity integration, deployment, or general operational-readback claim.
+dashboard and detail pages use the guarded server-only synthetic reviewer
+boundary, show explicit unavailable states, render the canonical session and v2
+timeline/segments, and make the development candidate-review route reachable.
+That route renders redacted records and submits ordinal actions through its
+same-origin server route. This remains one bounded synthetic readback path, not
+a live identity integration, deployment, or general operational-readback claim.
 
 ### S3 compatibility adapter
 

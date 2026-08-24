@@ -3,6 +3,7 @@ import Link from "next/link";
 import { StatusCard } from "@/components/StatusCard";
 import { formatDuration, getSessions } from "@/lib/api";
 
+export const dynamic = "force-dynamic";
 
 export default async function DashboardPage() {
   const sessionResult = await getSessions();
@@ -73,7 +74,11 @@ export default async function DashboardPage() {
             <p className="eyebrow">RECENT ACTIVITY</p>
             <h2>CAD sessions</h2>
           </div>
-          <span className="muted">Synthetic data only until pilot approval</span>
+          <div>
+            <span className="muted">Synthetic data only until pilot approval</span>
+            <br />
+            <Link href="/candidate-review">Review candidates →</Link>
+          </div>
         </div>
         {!dashboard ? (
           <div className="empty-state">

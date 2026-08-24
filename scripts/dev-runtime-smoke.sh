@@ -150,6 +150,123 @@ echo "Live API candidate discovery passed (status=200; $api_verdict)."
 
 status="$({
   curl --silent --show-error --max-time 10 \
+    --output "$smoke_dir/dashboard.html" --write-out '%{http_code}' \
+    "$web_base/"
+} || true)"
+if [[ "$status" != "200" ]]; then
+  echo "Synthetic dashboard returned HTTP $status." >&2
+  exit 1
+fi
+
+canonical_session="d6d9e5b7-c9bc-4eb1-ae4a-1a14ed5b1350"
+status="$({
+  curl --silent --show-error --max-time 10 \
+    --output "$smoke_dir/session.html" --write-out '%{http_code}' \
+    "$web_base/sessions/$canonical_session"
+} || true)"
+if [[ "$status" != "200" ]]; then
+  echo "Synthetic session detail returned HTTP $status." >&2
+  exit 1
+fi
+
+DASHBOARD_HTML="$smoke_dir/dashboard.html" \
+SESSION_HTML="$smoke_dir/session.html" \
+CAPTURE_PROOF="$capture_proof" \
+WORKER_PROOF="$worker_proof" \
+REVIEWER_PROOF="$reviewer_proof" \
+REVIEWER_SESSION="$reviewer_session" \
+REVIEWER_CSRF="$reviewer_csrf" \
+CANONICAL_SESSION="$canonical_session" \
+python3 - <<'PY'
+import os
+import re
+from html import unescape
+from html.parser import HTMLParser
+from pathlib import Path
+
+
+class VisibleTextParser(HTMLParser):
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.hidden_depth = 0
+        self.parts = []
+
+    def handle_starttag(self, tag, attrs):
+        if tag.casefold() in {"script", "style"}:
+            self.hidden_depth += 1
+
+    def handle_endtag(self, tag):
+        if tag.casefold() in {"script", "style"} and self.hidden_depth:
+            self.hidden_depth -= 1
+
+    def handle_data(self, data):
+        if not self.hidden_depth:
+            self.parts.append(data)
+
+
+def visible_text(value):
+    parser = VisibleTextParser()
+    parser.feed(value)
+    parser.close()
+    return " ".join(unescape(" ".join(parser.parts)).split())
+
+
+dashboard = Path(os.environ["DASHBOARD_HTML"]).read_text(encoding="utf-8")
+detail = Path(os.environ["SESSION_HTML"]).read_text(encoding="utf-8")
+dashboard_visible = visible_text(dashboard)
+detail_visible = visible_text(detail)
+session_id = os.environ["CANONICAL_SESSION"]
+
+dashboard_required = (
+    "Expert CAD workflow, made traceable.",
+    "CAD sessions",
+    "synthetic-pilot-machine",
+    "processed",
+    "pending",
+    "Review candidates",
+)
+if any(value not in dashboard_visible for value in dashboard_required):
+    raise SystemExit("synthetic dashboard visible-text evidence was incomplete")
+session_links = re.findall(r'href="/sessions/([0-9a-f-]{36})"', dashboard)
+if session_links != [session_id]:
+    raise SystemExit("synthetic dashboard did not expose exactly one canonical session")
+if 'href="/candidate-review"' not in dashboard:
+    raise SystemExit("synthetic dashboard did not link to candidate review")
+
+detail_required = (
+    session_id,
+    "Meaningful operations",
+    "8 meaningful operations from 8 observed events.",
+    "Deterministic operation segments",
+    "Segment 1",
+    "Segment 4",
+    "Commands: LINE",
+    "Commands: TRIM",
+    "Review candidates",
+)
+if any(value not in detail_visible for value in detail_required):
+    raise SystemExit("synthetic v2 session detail evidence was incomplete")
+if 'href="/candidate-review"' not in detail:
+    raise SystemExit("synthetic session detail did not link to candidate review")
+
+for html in (dashboard, detail):
+    for value in (
+        os.environ["CAPTURE_PROOF"],
+        os.environ["WORKER_PROOF"],
+        os.environ["REVIEWER_PROOF"],
+        os.environ["REVIEWER_SESSION"],
+        os.environ["REVIEWER_CSRF"],
+        "publication_key",
+        "review_target_id",
+    ):
+        if value in html:
+            raise SystemExit("session UI exposed private server evidence")
+    if re.search(r"candidate-(?:publication|skill):", html, re.IGNORECASE):
+        raise SystemExit("session UI exposed a raw candidate identifier")
+PY
+
+status="$({
+  curl --silent --show-error --max-time 10 \
     --output "$smoke_dir/candidate.html" --write-out '%{http_code}' \
     "$web_base/candidate-review"
 } || true)"

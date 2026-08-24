@@ -12,6 +12,8 @@ const API_ORIGIN = "https://review.synthetic.example";
 const DEV_ENVIRONMENTS = new Set(["development", "dev", "local", "test"]);
 const TOKEN_PATTERN = /^[A-Za-z0-9._:-]{32,256}$/;
 const MATERIAL_PATTERN = /^[A-Za-z0-9_-]{43}$/;
+const CANONICAL_UUID_PATTERN =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const FORBIDDEN_PROOF_VALUES = new Set([
   "changeme",
   "change-me",
@@ -37,6 +39,15 @@ type ServerConfig = Readonly<{
   reviewerCsrf: string;
   browserOrigin: string;
   browserHost: string;
+}>;
+
+export type SyntheticSessionGetDescriptor =
+  | Readonly<{ route: "list" }>
+  | Readonly<{ route: "detail" | "timeline"; session_id: string }>;
+
+export type SyntheticSessionGetResponse = Readonly<{
+  status: number;
+  body: unknown;
 }>;
 
 export type CandidateReviewActionResult =
@@ -174,6 +185,65 @@ async function boundedJsonFetch(
   } finally {
     clearTimeout(timeout);
   }
+}
+
+function exactDataObject(
+  value: unknown,
+  keys: readonly string[],
+): value is Record<string, unknown> {
+  if (
+    value === null ||
+    typeof value !== "object" ||
+    Array.isArray(value) ||
+    Object.getPrototypeOf(value) !== Object.prototype
+  ) {
+    return false;
+  }
+  const ownKeys = Reflect.ownKeys(value);
+  if (
+    ownKeys.length !== keys.length ||
+    ownKeys.some((key) => typeof key !== "string" || !keys.includes(key))
+  ) {
+    return false;
+  }
+  return keys.every((key) => {
+    const descriptor = Object.getOwnPropertyDescriptor(value, key);
+    return descriptor?.enumerable === true && "value" in descriptor;
+  });
+}
+
+function sessionGetPath(descriptor: unknown): string | null {
+  try {
+    if (!exactDataObject(descriptor, ["route"])) {
+      if (!exactDataObject(descriptor, ["route", "session_id"])) return null;
+      if (
+        (descriptor.route !== "detail" && descriptor.route !== "timeline") ||
+        typeof descriptor.session_id !== "string" ||
+        !CANONICAL_UUID_PATTERN.test(descriptor.session_id)
+      ) {
+        return null;
+      }
+      const suffix = descriptor.route === "timeline" ? "/timeline" : "";
+      return `/v1/sessions/${descriptor.session_id}${suffix}`;
+    }
+    return descriptor.route === "list" ? "/v1/sessions" : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Execute one fixed synthetic session-plane GET without exporting authority. */
+export async function getSyntheticSessionRoute(
+  descriptor: SyntheticSessionGetDescriptor,
+  fetcher: typeof fetch = fetch,
+): Promise<SyntheticSessionGetResponse | null> {
+  const config = serverConfig();
+  const path = sessionGetPath(descriptor);
+  if (config === null || path === null) return null;
+  return boundedJsonFetch(fetcher, `${config.apiBase}${path}`, {
+    method: "GET",
+    headers: apiHeaders(config),
+  });
 }
 
 function listInput(correlationId: string): CandidateReviewRequestInput {
