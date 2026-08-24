@@ -1,14 +1,8 @@
 import { createHash } from "node:crypto";
 
-// @ts-ignore Focused Node tests require the explicit source extension.
-import {
-  buildCandidateReviewOutcomesRequest,
-  buildCandidateReviewRequest,
-  readCandidateReview,
-  readCandidateReviewOutcomes,
-  type CandidateReviewRequestInput,
-} from "./candidate-review-client.ts";
-// @ts-ignore Focused Node tests require the explicit source extension.
+// @ts-expect-error TS5097 -- focused Node strip-types tests require the explicit source extension.
+import { buildCandidateReviewOutcomesRequest, buildCandidateReviewRequest, readCandidateReview, readCandidateReviewOutcomes, type CandidateReviewRequestInput } from "./candidate-review-client.ts";
+// @ts-expect-error TS5097 -- focused Node strip-types tests require the explicit source extension.
 import { buildCandidateReviewPostRequest, postCandidateReview } from "./candidate-review-post-client.ts";
 import type { CandidateReviewOutcomesView, CandidateReviewView } from "./candidate-review";
 

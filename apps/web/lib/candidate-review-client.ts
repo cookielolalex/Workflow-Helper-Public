@@ -1,10 +1,5 @@
-// @ts-ignore The focused Node loader requires the explicit source extension.
-import {
-  toCandidateReviewOutcomesView,
-  toCandidateReviewView,
-  type CandidateReviewOutcomesView,
-  type CandidateReviewView,
-} from "./candidate-review.ts";
+// @ts-expect-error TS5097 -- focused Node strip-types tests require the explicit source extension.
+import { toCandidateReviewOutcomesView, toCandidateReviewView, type CandidateReviewOutcomesView, type CandidateReviewView } from "./candidate-review.ts";
 
 export const CANDIDATE_REVIEW_QUEUE_PATH =
   "/v1/control/candidate-publications/review-queue" as const;
