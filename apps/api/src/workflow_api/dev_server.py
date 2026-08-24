@@ -110,7 +110,7 @@ _FORBIDDEN_PROOF_VALUES: Final = frozenset(
 _SCOPE = TenantWorkspaceScope("tenant.synthetic", "workspace.synthetic")
 _CAPTURE_SUBJECT = "capture-uploader.synthetic"
 _WORKER_SUBJECT = "worker.synthetic"
-_REVIEWER_SUBJECT = "reviewer.synthetic"
+_REVIEWER_SUBJECT = "reviewer_synthetic"
 _REVIEWER_ORIGIN = "https://review.synthetic.example"
 _DATABASE_NAMES: Final = (
     "browser.sqlite3",

@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import sqlite3
 from pathlib import Path
+from uuid import UUID
 
 import pytest
 from fastapi.testclient import TestClient
@@ -11,9 +13,28 @@ import workflow_api.main as main_module
 from workflow_api import dev_server
 from workflow_api.browser_session_store import SQLiteBrowserSessionStore
 from workflow_api.candidate_discovery_service import CandidateDiscoveryService
-from workflow_api.candidate_publication_store import SQLiteCandidatePublicationStore
+from workflow_api.candidate_publication_service import (
+    CandidatePublicationRequest,
+    CandidatePublicationService,
+)
+from workflow_api.candidate_publication_store import (
+    SQLiteCandidatePublicationStore,
+    _restricted_jcs,
+)
+from workflow_api.control_scope import _qualify
 from workflow_api.control_service import ControlService
 from workflow_api.legacy_session_store import SQLiteLegacySessionStore
+from workflow_api.models import (
+    ArtifactProvider,
+    ArtifactRef,
+    ArtifactRole,
+    EventType,
+    OperationSegment,
+    ProcessingJobV2,
+    ProcessingResultV2,
+    TimelineItem,
+)
+from workflow_api.processing_job_v2_identity import processing_job_v2_payload_digest
 from workflow_api.runtime_bundle import SealedSyntheticRuntimeBundle
 from workflow_api.safety_control import SafetyControlService
 
@@ -24,6 +45,12 @@ _PROOFS = {
 }
 _SESSION = base64.urlsafe_b64encode(bytes(range(1, 33))).decode("ascii").rstrip("=")
 _CSRF = base64.urlsafe_b64encode(bytes(range(33, 65))).decode("ascii").rstrip("=")
+_JOB_ID = UUID("11111111-1111-4111-8111-111111111111")
+_CANDIDATE_SESSION_ID = UUID("22222222-2222-4222-8222-222222222222")
+_EVENT_IDS = (
+    UUID("90000000-0000-4000-8000-000000000001"),
+    UUID("90000000-0000-4000-8000-000000000002"),
+)
 
 
 def _configure(monkeypatch: pytest.MonkeyPatch, data_dir: Path) -> None:
@@ -51,6 +78,114 @@ def _session_payload() -> dict[str, object]:
         "package_sha256": "a" * 64,
         "package_size_bytes": 1,
     }
+
+
+def _publish_candidate(bundle: SealedSyntheticRuntimeBundle):
+    job = ProcessingJobV2(
+        schema_version="2.0",
+        job_id=_JOB_ID,
+        session_id=_CANDIDATE_SESSION_ID,
+        input_artifact=ArtifactRef(
+            provider=ArtifactProvider.S3,
+            file_id="raw-package-synthetic",
+            revision="raw-revision-0001",
+            sha256="a" * 64,
+            size_bytes=4096,
+            mime_type="application/zip",
+            role=ArtifactRole.RAW_PACKAGE,
+        ),
+    )
+    timeline = [
+        TimelineItem(
+            offset_seconds=index,
+            event_type=EventType.CAD_COMMAND,
+            summary="observed command",
+            source_event_id=event_id,
+        )
+        for index, event_id in enumerate(_EVENT_IDS, start=1)
+    ]
+    segments = [
+        OperationSegment(
+            sequence=index,
+            start_offset_seconds=index,
+            end_offset_seconds=index,
+            command_names=["LINE"],
+            drawing_ref="synthetic-drawing",
+            summary="one synthetic command",
+            source_event_ids=[event_id],
+        )
+        for index, event_id in enumerate(_EVENT_IDS, start=1)
+    ]
+    result = ProcessingResultV2(
+        schema_version="2.0",
+        session_id=_CANDIDATE_SESSION_ID,
+        event_count=2,
+        meaningful_event_count=2,
+        timeline=timeline,
+        operation_segments=segments,
+        keyframes=[],
+        warnings=[],
+    )
+    artifact = ArtifactRef(
+        provider=ArtifactProvider.GOOGLE_DRIVE,
+        file_id="timeline-synthetic",
+        revision="timeline-revision-0001",
+        sha256="b" * 64,
+        size_bytes=128,
+        mime_type="application/json",
+        role=ArtifactRole.TIMELINE,
+    ).model_dump(mode="json")
+    manifest = {
+        "schema_version": "1.0",
+        "job_id": str(_JOB_ID),
+        "session_id": str(_CANDIDATE_SESSION_ID),
+        "payload_digest": processing_job_v2_payload_digest(job),
+        "payload_digest_scheme": (
+            "workflow-helper.processing-job-v2.payload.sha256-jcs.v1"
+        ),
+        "outputs": [
+            {"store_namespace": "google-drive://synthetic", "artifact_ref": artifact}
+        ],
+    }
+    manifest_jcs = _restricted_jcs(manifest).encode("utf-8")
+    source_digest = hashlib.sha256(
+        b"workflow-helper\0processing-job-v2\0result-digest\0sha256-jcs-v1\0"
+        + manifest_jcs
+    ).hexdigest()
+    service = CandidatePublicationService(
+        bundle.candidate_publication_store,
+        bundle.control_service,
+    )
+    return service.publish(
+        CandidatePublicationRequest(
+            scope=dev_server._SCOPE,
+            job=job,
+            result=result,
+            result_manifest={
+                **manifest,
+                "result_manifest_jcs": manifest_jcs.decode("utf-8"),
+                "source_result_sha256": source_digest,
+            },
+            timeline_binding={
+                "store_namespace": "google-drive://synthetic",
+                "artifact_ref": artifact,
+            },
+            drawing_ref="synthetic-drawing",
+            timeline_commands=[
+                {
+                    "event_id": str(event_id),
+                    "command_name": "LINE",
+                    "segment_sequence": index,
+                }
+                for index, event_id in enumerate(_EVENT_IDS, start=1)
+            ],
+            rejected_alternative_count=0,
+            qualifying_run_length=2,
+            reservation_owner_id="worker-synthetic",
+            lease_duration_seconds=30,
+            now=1_000_000,
+        )
+    )
 
 
 def test_build_app_uses_exact_synthetic_bundle_and_six_stores(
@@ -131,6 +266,135 @@ def test_dev_runtime_authorizes_session_plane_and_denies_bad_proof(
         json=_session_payload(),
     )
     assert invalid.status_code == 401
+
+
+def test_dev_runtime_reviewer_records_durable_review_and_leaves_unreviewed_queue(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _configure(monkeypatch, tmp_path / "synthetic-runtime")
+    application = dev_server.build_app()
+    bundle = application.state.runtime_bundle
+    metadata = _publish_candidate(bundle)
+    client = TestClient(application)
+    safe_headers = {
+        "Cookie": f"workflow_session={_SESSION}",
+        "X-Workflow-Dev-Reviewer-Proof": _PROOFS["reviewer"],
+    }
+    unsafe_headers = {
+        **safe_headers,
+        "Origin": "https://review.synthetic.example",
+        "X-CSRF-Token": _CSRF,
+    }
+
+    assert dev_server._REVIEWER_SUBJECT == "reviewer_synthetic"
+    before = client.get(
+        "/v1/control/candidate-publications?correlation_id=dev-review-before",
+        headers=safe_headers,
+    )
+    assert before.status_code == 200
+    assert before.json()["count"] == 1
+
+    reviewed = client.post(
+        f"/v1/control/candidate-publications/{metadata.publication_key}/review",
+        headers=unsafe_headers,
+        json={
+            "review_target_id": metadata.review_target_id,
+            "correlation_id": "dev-review-authorized",
+            "idempotency_key": "dev-review-authorized-1",
+            "status": "approved",
+        },
+    )
+
+    assert reviewed.status_code == 200, reviewed.text
+    assert reviewed.json() == {"status": "approved"}
+    target = _qualify(dev_server._SCOPE, "review_target", metadata.review_target_id)
+    events = bundle.control_service._store.list_candidate_review_events(
+        target,
+        after_sequence=0,
+        limit=10,
+    )
+    assert len(events) == 1
+    assert events[0].actor_id == "reviewer_synthetic"
+    assert events[0].status == "approved"
+    after = client.get(
+        "/v1/control/candidate-publications?correlation_id=dev-review-after",
+        headers=safe_headers,
+    )
+    assert after.status_code == 200
+    assert after.json() == {"items": [], "count": 0, "next_cursor": None}
+
+    reopened = TestClient(dev_server.open_existing_app())
+    durable = reopened.get(
+        "/v1/control/candidate-publications?correlation_id=dev-review-reopened",
+        headers=safe_headers,
+    )
+    assert durable.status_code == 200
+    assert durable.json() == {"items": [], "count": 0, "next_cursor": None}
+
+
+def test_nonconforming_dev_reviewer_is_denied_before_publication_mutation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _configure(monkeypatch, tmp_path / "synthetic-runtime")
+    monkeypatch.setattr(dev_server, "_REVIEWER_SUBJECT", "reviewer.synthetic")
+    application = dev_server.build_app()
+    bundle = application.state.runtime_bundle
+    metadata = _publish_candidate(bundle)
+    client = TestClient(application)
+    looked_up = False
+    original_get_finalized = SQLiteCandidatePublicationStore.get_finalized
+
+    def forbidden_lookup(*_args: object, **_kwargs: object) -> object:
+        nonlocal looked_up
+        looked_up = True
+        raise AssertionError("publication lookup occurred before reviewer denial")
+
+    monkeypatch.setattr(
+        SQLiteCandidatePublicationStore,
+        "get_finalized",
+        forbidden_lookup,
+    )
+    response = client.post(
+        f"/v1/control/candidate-publications/{metadata.publication_key}/review",
+        headers={
+            "Cookie": f"workflow_session={_SESSION}",
+            "Origin": "https://review.synthetic.example",
+            "X-CSRF-Token": _CSRF,
+            "X-Workflow-Dev-Reviewer-Proof": _PROOFS["reviewer"],
+        },
+        json={
+            "review_target_id": metadata.review_target_id,
+            "correlation_id": "dev-review-denied",
+            "idempotency_key": "dev-review-denied-1",
+            "status": "approved",
+        },
+    )
+
+    assert response.status_code == 403
+    assert response.json() == {"detail": "action forbidden"}
+    assert looked_up is False
+    target = _qualify(dev_server._SCOPE, "review_target", metadata.review_target_id)
+    assert bundle.control_service._store.list_candidate_review_events(
+        target,
+        after_sequence=0,
+        limit=10,
+    ) == []
+    monkeypatch.setattr(
+        SQLiteCandidatePublicationStore,
+        "get_finalized",
+        original_get_finalized,
+    )
+    remaining = client.get(
+        "/v1/control/candidate-publications?correlation_id=dev-review-denied-after",
+        headers={
+            "Cookie": f"workflow_session={_SESSION}",
+            "X-Workflow-Dev-Reviewer-Proof": _PROOFS["reviewer"],
+        },
+    )
+    assert remaining.status_code == 200
+    assert remaining.json()["count"] == 1
 
 
 def test_outer_guard_rejects_non_dev_before_path_or_bundle_side_effect(
