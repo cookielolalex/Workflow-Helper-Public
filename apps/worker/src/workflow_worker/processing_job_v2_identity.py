@@ -1,4 +1,8 @@
-"""Dormant, pure payload identity for admitted ProcessingJobV2 snapshots."""
+"""Active pure payload identity for admitted ProcessingJobV2 snapshots.
+
+The default v2 worker path uses this helper for replay-stable processing and
+candidate evidence without provider discovery.
+"""
 
 from __future__ import annotations
 

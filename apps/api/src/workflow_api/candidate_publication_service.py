@@ -1,11 +1,13 @@
-"""Dormant application boundary for one complete candidate publication.
+"""Application boundary for one complete synthetic candidate publication.
 
 The service is intentionally small.  It accepts evidence that an upstream
 caller has already verified, asks the publication domain to prepare the exact
 canonical bytes before any durable operation, and delegates reservation and
 finalization to :mod:`candidate_publication_store`.  It does not discover
 providers, read artifacts, consult configuration, or open a database while
-being imported or constructed.
+being imported or constructed.  The sealed synthetic runtime explicitly binds
+this service for the active v2 publication and review slice; the module-global
+application does not.
 
 Only the store's metadata projection crosses this boundary.  In particular,
 the derivation-evidence and canonical-byte BLOBs held by a store record are

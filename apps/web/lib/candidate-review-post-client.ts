@@ -1,9 +1,10 @@
 /**
- * A dormant, synchronous seam for one synthetic candidate-review POST.
+ * The synchronous seam used by the guarded synthetic candidate-review action.
  *
  * The caller supplies both the public identifiers and the transport.  This
  * module never creates a network client, awaits a result, or exposes a server
- * response body.  Every object crossing the seam is checked as a bounded,
+ * response body. It remains server-side in the activated development route.
+ * Every object crossing the seam is checked as a bounded,
  * exact plain-object shape before it is used.
  */
 

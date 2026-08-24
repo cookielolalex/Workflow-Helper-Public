@@ -1,5 +1,6 @@
 /**
- * A deliberately small, pure seam for a future candidate-review surface.
+ * The deliberately small, pure projection used by the guarded synthetic
+ * candidate-review surface.
  *
  * The input is an explicitly wrapped synthetic response.  The wrapper keeps
  * loading and authority failures distinct from a valid route response.  The
