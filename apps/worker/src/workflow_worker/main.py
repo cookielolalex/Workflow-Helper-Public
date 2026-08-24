@@ -9,14 +9,32 @@ from collections.abc import Callable
 from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
+from uuid import UUID, uuid5
 
 import boto3
 from botocore.exceptions import ClientError
 
 from .handler import process_package, process_package_v2
-from .models import ProcessingCompletion, ProcessingJob, ProcessingResult
+from .models import (
+    ArtifactProvider,
+    ArtifactRef,
+    ArtifactRole,
+    EventType,
+    ProcessingCompletion,
+    ProcessingJob,
+    ProcessingJobV2,
+    ProcessingResult,
+)
+from .processing_job_v2_result_identity import (
+    PROCESSING_JOB_V2_RESULT_DIGEST_DOMAIN_PREFIX,
+    ProcessingJobV2ResultOutputBinding,
+    build_processing_job_v2_result_manifest,
+    canonical_processing_job_v2_result_preimage,
+    processing_job_v2_result_digest,
+)
 from .processing_v2 import (
     ProcessingCompletionV2,
+    ProcessingResultV2,
     artifact_bytes_v2,
     completion_for_v2,
 )
@@ -30,6 +48,21 @@ DEFAULT_MAX_PACKAGE_BYTES = 512 * 1024 * 1024
 DEFAULT_STREAM_CHUNK_BYTES = 1024 * 1024
 DEFAULT_SPOOL_MEMORY_BYTES = 8 * 1024 * 1024
 MAX_CONDITIONAL_WRITE_ATTEMPTS = 3
+
+# The v1 queue envelope remains the stable transport contract.  This fixed
+# namespace makes the in-process v2 adapter deterministic without introducing
+# another identity store or schema.
+PROCESSING_JOB_V2_ADAPTER_NAMESPACE = UUID(
+    "7e1f16ab-4c6d-4d15-9df6-2e58b0fd9e4a"
+)
+_ADMITTED_CANDIDATE_LIFECYCLE = frozenset(
+    {
+        EventType.SESSION_STARTED.value,
+        EventType.DRAWING_OPENED.value,
+        EventType.DRAWING_SAVED.value,
+        EventType.SESSION_ENDED.value,
+    }
+)
 
 
 def _client(service: str):
@@ -71,6 +104,149 @@ def _completion_for(
 
 def _expected_package_sha256(object_key: str) -> str:
     return object_key.rsplit("/", 1)[-1].removesuffix(".zip")
+
+
+def _adapt_v1_job(job: ProcessingJob, package_size_bytes: int) -> ProcessingJobV2:
+    """Build the deterministic v2 identity from one admitted v1 envelope."""
+
+    stable_name = "\0".join(
+        (job.schema_version, str(job.session_id), job.object_key)
+    )
+    package_sha256 = _expected_package_sha256(job.object_key)
+    return ProcessingJobV2(
+        schema_version="2.0",
+        job_id=uuid5(PROCESSING_JOB_V2_ADAPTER_NAMESPACE, stable_name),
+        session_id=job.session_id,
+        input_artifact=ArtifactRef(
+            provider=ArtifactProvider.S3,
+            file_id=job.object_key,
+            revision=package_sha256,
+            sha256=package_sha256,
+            size_bytes=package_size_bytes,
+            mime_type="application/zip",
+            role=ArtifactRole.RAW_PACKAGE,
+        ),
+    )
+
+
+def _timeline_binding(
+    job: ProcessingJobV2,
+    output_object_key: str,
+    artifact: bytes,
+    processed_bucket: str,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Return the existing result-manifest and its timeline binding."""
+
+    timeline_artifact = ArtifactRef(
+        provider=ArtifactProvider.S3,
+        file_id=output_object_key,
+        revision=hashlib.sha256(artifact).hexdigest(),
+        sha256=hashlib.sha256(artifact).hexdigest(),
+        size_bytes=len(artifact),
+        mime_type="application/json",
+        role=ArtifactRole.TIMELINE,
+    )
+    binding = ProcessingJobV2ResultOutputBinding(
+        store_namespace=(
+            "aws-s3://aws/000000000000/ap-northeast-1/" + processed_bucket
+        ),
+        artifact_ref=timeline_artifact,
+    )
+    manifest = build_processing_job_v2_result_manifest(job, [binding])
+    preimage = canonical_processing_job_v2_result_preimage(job, [binding])
+    manifest["result_manifest_jcs"] = preimage[
+        len(PROCESSING_JOB_V2_RESULT_DIGEST_DOMAIN_PREFIX) :
+    ].decode("utf-8")
+    manifest["source_result_sha256"] = processing_job_v2_result_digest(job, [binding])
+    return manifest, {
+        "store_namespace": binding.store_namespace,
+        "artifact_ref": timeline_artifact.model_dump(mode="json"),
+    }
+
+
+def _candidate_evidence(
+    job: ProcessingJobV2,
+    result: ProcessingResultV2,
+    result_manifest: dict[str, Any],
+    timeline_binding: dict[str, Any],
+) -> dict[str, Any] | None:
+    """Derive one bounded, deterministic candidate from an admitted result."""
+
+    by_event = {}
+    for segment in result.operation_segments:
+        if len(segment.command_names) != 1 or len(segment.source_event_ids) != 1:
+            return None
+        source_event_id = segment.source_event_ids[0]
+        if source_event_id in by_event:
+            return None
+        by_event[source_event_id] = segment
+
+    timeline_ids = {item.source_event_id for item in result.timeline}
+    cad_ids = {
+        item.source_event_id
+        for item in result.timeline
+        if item.event_type is EventType.CAD_COMMAND
+    }
+    if set(by_event) - timeline_ids or set(by_event) - cad_ids or cad_ids - set(by_event):
+        return None
+
+    runs: list[list[tuple[Any, Any]]] = []
+    current: list[tuple[Any, Any]] = []
+    for item in result.timeline:
+        event_type = item.event_type.value
+        if event_type == EventType.CAD_COMMAND.value:
+            current.append((item, by_event[item.source_event_id]))
+        elif event_type in _ADMITTED_CANDIDATE_LIFECYCLE:
+            if current:
+                runs.append(current)
+                current = []
+        else:
+            return None
+    if current:
+        runs.append(current)
+    if len(runs) != 1 or not 2 <= len(runs[0]) <= 64:
+        return None
+
+    run = runs[0]
+    drawing_refs = {segment.drawing_ref for _, segment in run}
+    if len(drawing_refs) != 1:
+        return None
+    commands = [segment.command_names[0] for _, segment in run]
+    run_length = len(commands)
+    period = next(
+        (
+            candidate
+            for candidate in range(1, run_length)
+            if run_length % candidate == 0
+            and all(
+                commands[index] == commands[index % candidate]
+                for index in range(run_length)
+            )
+        ),
+        None,
+    )
+    if period is None:
+        return None
+
+    occurrences = [
+        {
+            "event_id": str(item.source_event_id),
+            "command_name": segment.command_names[0],
+            "segment_sequence": segment.sequence,
+        }
+        for item, segment in run
+    ]
+    return {
+        "envelope_version": "1.0",
+        "job": job.model_dump(mode="json"),
+        "result": result.model_dump(mode="json"),
+        "result_manifest": result_manifest,
+        "timeline_binding": timeline_binding,
+        "drawing_ref": next(iter(drawing_refs)),
+        "occurrences": occurrences,
+        "rejected_alternative_count": 0,
+        "qualifying_run_length": run_length,
+    }
 
 
 def _artifact_bytes(result: ProcessingResult) -> bytes:
@@ -280,6 +456,48 @@ def post_completion(
             sleep(min(base_delay * (2 ** (attempt - 1)), 10.0))
 
 
+def post_candidate(
+    evidence: dict[str, Any],
+    *,
+    sleep: Callable[[float], None] = time.sleep,
+) -> None:
+    """Publish candidate evidence with the same bounded worker retry policy."""
+
+    api_base_url = os.getenv("API_BASE_URL", "http://api:8000").rstrip("/")
+    session_id = evidence["job"]["session_id"]
+    url = f"{api_base_url}/v1/internal/sessions/{session_id}/candidate-publication"
+    body = json.dumps(
+        evidence,
+        allow_nan=False,
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("utf-8")
+    headers = {
+        "Content-Type": "application/json",
+        "Idempotency-Key": hashlib.sha256(body).hexdigest(),
+    }
+    token = _worker_token()
+    if token:
+        headers["X-Workflow-Worker-Token"] = token
+
+    attempts = _positive_int_env("WORKER_CALLBACK_MAX_ATTEMPTS", DEFAULT_MAX_RETRIES)
+    base_delay = float(os.getenv("WORKER_RETRY_BASE_SECONDS", str(DEFAULT_RETRY_BASE_SECONDS)))
+    for attempt in range(1, attempts + 1):
+        try:
+            request = Request(url, data=body, method="POST", headers=headers)
+            with urlopen(request, timeout=10) as response:
+                if 200 <= response.status < 300:
+                    return
+                raise RuntimeError(f"candidate publication API returned {response.status}")
+        except (HTTPError, URLError, TimeoutError, RuntimeError) as exc:
+            if attempt == attempts:
+                raise RuntimeError(
+                    f"candidate publication callback failed after {attempts} attempts"
+                ) from exc
+            sleep(min(base_delay * (2 ** (attempt - 1)), 10.0))
+
+
 def process_message(
     body: str,
     *,
@@ -310,6 +528,7 @@ def process_message_v2(
     *,
     s3: Any | None = None,
     completion_callback: Callable[[ProcessingCompletionV2], None] = post_completion,
+    candidate_callback: Callable[[dict[str, Any]], None] = post_candidate,
 ) -> ProcessingCompletionV2:
     """Process an existing v1 queue envelope and publish the v2 result."""
     job = ProcessingJob.model_validate_json(body)
@@ -317,6 +536,9 @@ def process_message_v2(
     processed_bucket = os.environ["PROCESSED_BUCKET"]
     s3_client = s3 or _client("s3")
     with _download_package(s3_client, raw_bucket, job) as package_file:
+        package_file.seek(0, 2)
+        package_size_bytes = package_file.tell()
+        package_file.seek(0)
         result = process_package_v2(job.session_id, package_file)
     output_key = f"sessions/{job.session_id}/timeline-v2.json"
     artifact = artifact_bytes_v2(result)
@@ -328,7 +550,22 @@ def process_message_v2(
         verify_existing_body=True,
     )
     completion = completion_for_v2(result, output_key)
+    v2_job = _adapt_v1_job(job, package_size_bytes)
+    result_manifest, timeline_binding = _timeline_binding(
+        v2_job,
+        output_key,
+        artifact,
+        processed_bucket,
+    )
     completion_callback(completion)
+    candidate = _candidate_evidence(
+        v2_job,
+        result,
+        result_manifest,
+        timeline_binding,
+    )
+    if candidate is not None:
+        candidate_callback(candidate)
     LOGGER.info(
         "processed v2 session %s with %s operation segments",
         job.session_id,

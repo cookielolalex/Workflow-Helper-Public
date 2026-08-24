@@ -797,7 +797,7 @@ def test_digest_is_not_any_excluded_identity_or_representation() -> None:
     }
 
 
-def test_no_runtime_import_or_wiring_references_the_dormant_module() -> None:
+def test_main_is_the_sole_runtime_user_of_result_identity() -> None:
     source_root = _root() / "apps/worker/src/workflow_worker"
     references = []
     for path in source_root.glob("*.py"):
@@ -806,7 +806,10 @@ def test_no_runtime_import_or_wiring_references_the_dormant_module() -> None:
         source = path.read_text(encoding="utf-8")
         if "processing_job_v2_result_identity" in source:
             references.append(path.name)
-    assert references == []
+    assert references == ["main.py"]
+
+    main_source = (source_root / "main.py").read_text(encoding="utf-8")
+    assert "from .processing_job_v2_result_identity import (" in main_source
 
     tree = ast.parse((source_root / "processing_job_v2_result_identity.py").read_text())
     imported = {

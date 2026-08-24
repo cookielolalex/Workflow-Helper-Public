@@ -1,5 +1,6 @@
 import sqlite3
 from collections.abc import Callable, Coroutine
+from dataclasses import asdict
 from typing import Annotated, Any
 from uuid import UUID
 
@@ -10,9 +11,20 @@ from ..artifact_gateway import (
     ArtifactGateway,
     ArtifactGatewayUnavailableError,
 )
+from ..candidate_publication_service import (
+    CandidatePublicationRequest,
+    CandidatePublicationService,
+)
+from ..candidate_publication_store import (
+    CandidatePublicationError,
+    CandidatePublicationValidationError,
+    NoCandidateError,
+    SQLiteCandidatePublicationStore,
+)
 from ..config import Settings
 from ..control_auth import ControlAction
 from ..dependencies import (
+    RuntimeBundleDependency,
     get_artifact_gateway,
     get_provider_neutral_security_composition,
     get_runtime_settings,
@@ -30,7 +42,9 @@ from ..legacy_session_security import (
 )
 from ..models import (
     ProcessingCompletionPayload,
+    ProcessingJobV2,
     ProcessingResultPayload,
+    ProcessingResultV2,
     SessionCreate,
     SessionList,
     SessionRecord,
@@ -41,6 +55,7 @@ from ..repository import (
     SessionConflictError,
     SessionNotFoundError,
 )
+from ..runtime_bundle import SealedSyntheticRuntimeBundle
 from ..session_security import SessionSecurityRejectedError
 
 SettingsDependency = Annotated[Settings, Depends(get_runtime_settings)]
@@ -51,6 +66,19 @@ CompositionDependency = Annotated[
 ]
 Guard = Callable[..., Coroutine[Any, Any, AuthorizedLegacySessionRequest]]
 StoreOperationalError = (sqlite3.Error, RuntimeError, OSError)
+_CANDIDATE_PUBLICATION_FIELDS = frozenset(
+    {
+        "envelope_version",
+        "job",
+        "result",
+        "result_manifest",
+        "timeline_binding",
+        "drawing_ref",
+        "occurrences",
+        "rejected_alternative_count",
+        "qualifying_run_length",
+    }
+)
 
 
 def _workload_guard(
@@ -156,6 +184,10 @@ require_reviewer_timeline = _browser_guard(action=ControlAction.SESSION_TIMELINE
 
 router = APIRouter(prefix="/v1/sessions", tags=["sessions"])
 internal_router = APIRouter(prefix="/v1/internal/sessions", tags=["internal"])
+candidate_internal_router = APIRouter(
+    prefix="/v1/internal/sessions",
+    tags=["internal"],
+)
 
 
 @router.post("", response_model=SessionRecord, status_code=status.HTTP_201_CREATED)
@@ -358,3 +390,79 @@ async def complete_processing(
         raise _session_conflict() from exc
     except StoreOperationalError as exc:
         raise _service_unavailable() from exc
+
+
+@candidate_internal_router.post(
+    "/{session_id}/candidate-publication",
+    include_in_schema=False,
+)
+async def publish_candidate(
+    session_id: UUID,
+    authorization: Annotated[
+        AuthorizedLegacySessionRequest, Depends(require_worker_completion)
+    ],
+    payload: dict[str, Any],
+    composition: CompositionDependency,
+    bundle: RuntimeBundleDependency,
+) -> dict[str, Any]:
+    """Admit one worker-derived candidate only after durable v2 completion."""
+
+    if type(payload) is not dict or set(payload) != _CANDIDATE_PUBLICATION_FIELDS:
+        raise HTTPException(status_code=422, detail="request rejected")
+    if type(composition) is not ProviderNeutralSecurityComposition:
+        raise _service_unavailable()
+    if (
+        type(bundle) is not SealedSyntheticRuntimeBundle
+        or type(bundle.candidate_publication_store) is not SQLiteCandidatePublicationStore
+    ):
+        raise _service_unavailable()
+
+    try:
+        job = ProcessingJobV2.model_validate(payload["job"])
+        result = ProcessingResultV2.model_validate(payload["result"])
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=422, detail="request rejected") from exc
+    if job.session_id != session_id or result.session_id != session_id:
+        raise HTTPException(status_code=422, detail="request rejected")
+
+    try:
+        persisted = await composition.store.get_timeline(
+            session_id,
+            scope=authorization.scope,
+        )
+    except SessionNotFoundError as exc:
+        raise _session_absent() from exc
+    except StoreOperationalError as exc:
+        raise _service_unavailable() from exc
+    if type(persisted) is not ProcessingResultV2 or (
+        persisted.model_dump(mode="json") != result.model_dump(mode="json")
+    ):
+        raise _session_conflict()
+
+    try:
+        service = CandidatePublicationService(
+            bundle.candidate_publication_store,
+            bundle.control_service,
+        )
+        request = CandidatePublicationRequest(
+            scope=authorization.scope,
+            job=job,
+            result=result,
+            result_manifest=payload["result_manifest"],
+            timeline_binding=payload["timeline_binding"],
+            drawing_ref=payload["drawing_ref"],
+            timeline_commands=payload["occurrences"],
+            rejected_alternative_count=payload["rejected_alternative_count"],
+            qualifying_run_length=payload["qualifying_run_length"],
+            reservation_owner_id=authorization.principal.subject,
+            lease_duration_seconds=30,
+            envelope_version=payload["envelope_version"],
+        )
+        metadata = service.publish_request(request)
+    except (NoCandidateError, CandidatePublicationValidationError) as exc:
+        raise HTTPException(status_code=422, detail="request rejected") from exc
+    except CandidatePublicationError as exc:
+        raise _service_unavailable() from exc
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=422, detail="request rejected") from exc
+    return asdict(metadata)

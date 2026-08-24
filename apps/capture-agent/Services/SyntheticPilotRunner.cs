@@ -107,6 +107,22 @@ public sealed class SyntheticPilotRunner(
                     "synthetic-drawing-001",
                     SyntheticDetails()),
                 new CadEvent(
+                    Guid.Parse("4d2d4b2c-7e11-4b5e-9c20-1e5f6a7b8c90"),
+                    StartedAt.AddSeconds(40),
+                    "cad_command",
+                    "autocad",
+                    "LINE",
+                    "synthetic-drawing-001",
+                    SyntheticDetails()),
+                new CadEvent(
+                    Guid.Parse("5e3e5c3d-8f22-4c6f-a031-2f6a7b8c9d01"),
+                    StartedAt.AddSeconds(45),
+                    "cad_command",
+                    "autocad",
+                    "TRIM",
+                    "synthetic-drawing-001",
+                    SyntheticDetails()),
+                new CadEvent(
                     Guid.Parse("a21f79d6-cb3c-41c4-b5f0-1f0a883fde45"),
                     StartedAt.AddSeconds(50),
                     "drawing_saved",

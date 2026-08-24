@@ -67,6 +67,24 @@
       "details": { "synthetic": true }
     },
     {
+      "event_id": "4d2d4b2c-7e11-4b5e-9c20-1e5f6a7b8c90",
+      "occurred_at": "2026-08-17T00:00:40Z",
+      "event_type": "cad_command",
+      "source": "autocad",
+      "command_name": "LINE",
+      "drawing_ref": "synthetic-drawing-001",
+      "details": { "synthetic": true }
+    },
+    {
+      "event_id": "5e3e5c3d-8f22-4c6f-a031-2f6a7b8c9d01",
+      "occurred_at": "2026-08-17T00:00:45Z",
+      "event_type": "cad_command",
+      "source": "autocad",
+      "command_name": "TRIM",
+      "drawing_ref": "synthetic-drawing-001",
+      "details": { "synthetic": true }
+    },
+    {
       "event_id": "a21f79d6-cb3c-41c4-b5f0-1f0a883fde45",
       "occurred_at": "2026-08-17T00:00:50Z",
       "event_type": "drawing_saved",
