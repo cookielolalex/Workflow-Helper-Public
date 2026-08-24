@@ -86,6 +86,7 @@ test("terminal outcomes use one fixed descriptor and redact strict display evide
         occurrence_count: 4,
         provenance: "observed",
         review_status: "needs_changes",
+        reason_code: "evidence",
         decided_at_us: 2_000_000,
       }],
       count: 1,
@@ -99,11 +100,31 @@ test("terminal outcomes use one fixed descriptor and redact strict display evide
       occurrence_count: 4,
       provenance: "observed",
       review_status: "needs_changes",
+      reason_code: "evidence",
       decided_at: "1970-01-01T00:00:02.000Z",
     }],
   });
   assert.equal(JSON.stringify(view).includes(PUBLICATION_KEY), false);
   assert.equal(JSON.stringify(view).includes(REVIEW_TARGET), false);
+  const canonical = {
+    command_sequence: ["LINE", "TRIM"],
+    occurrence_count: 2,
+    provenance: "observed",
+    review_status: "rejected",
+    reason_code: "sequence",
+    decided_at_us: 2_000_000,
+  };
+  for (const malformed of [
+    { ...canonical, reason_code: null },
+    { ...canonical, reason_code: "unknown" },
+    { ...canonical, review_status: "approved", reason_code: "sequence" },
+    { ...canonical, reason: "private free text" },
+  ]) {
+    assert.deepEqual(
+      readCandidateReviewOutcomes(() => response(200, { items: [malformed], count: 1 })),
+      { status: "unavailable" },
+    );
+  }
 });
 
 test("invalid request bounds do not invoke transport", () => {

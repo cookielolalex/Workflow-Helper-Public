@@ -35,6 +35,7 @@ export type CandidateReviewOutcomeRow = {
   readonly occurrence_count: number;
   readonly provenance: "observed";
   readonly review_status: "approved" | "rejected" | "needs_changes";
+  readonly reason_code: "sequence" | "evidence" | null;
   readonly decided_at: string;
 };
 
@@ -58,6 +59,7 @@ const OUTCOME_ITEM_KEYS = [
   "occurrence_count",
   "provenance",
   "review_status",
+  "reason_code",
   "decided_at_us",
 ] as const;
 const LOADING_KEYS = ["status"] as const;
@@ -165,7 +167,10 @@ function parseOutcomeResponse(value: unknown): CandidateReviewOutcomesView {
       item.provenance !== "observed" ||
       !["approved", "rejected", "needs_changes"].includes(
         item.review_status as string,
-      )
+      ) ||
+      (item.review_status === "approved"
+        ? item.reason_code !== null
+        : item.reason_code !== "sequence" && item.reason_code !== "evidence")
     ) {
       return outcomeUnavailable();
     }
@@ -177,6 +182,7 @@ function parseOutcomeResponse(value: unknown): CandidateReviewOutcomesView {
       occurrence_count: item.occurrence_count,
       provenance: "observed",
       review_status: item.review_status as CandidateReviewOutcomeRow["review_status"],
+      reason_code: item.reason_code as CandidateReviewOutcomeRow["reason_code"],
       decided_at: decidedAt,
     });
   }

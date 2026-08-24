@@ -496,7 +496,11 @@ empty_html = Path(os.environ["APPROVED_EMPTY_HTML"]).read_text(encoding="utf-8")
 catalog_html = Path(os.environ["APPROVED_CATALOG_HTML"]).read_text(encoding="utf-8")
 empty_visible = visible_text(empty_html)
 catalog_visible = visible_text(catalog_html)
-if "No candidates awaiting review." not in empty_visible or "approved" not in empty_visible:
+if (
+    "No candidates awaiting review." not in empty_visible
+    or "approved" not in empty_visible
+    or "No reason code" not in empty_visible
+):
     raise SystemExit("approved decision did not leave an empty active queue")
 for expected in (
     "Approved workflows",
@@ -549,8 +553,11 @@ if (
     or payload.get("provenance") != "observed"
     or payload.get("approval_status") != "approved"
     or type(payload.get("decided_at")) is not str
+    or "reason_code" in payload
 ):
     raise SystemExit("approved workflow download schema was not exact")
+if "reason_code" in catalog_html or b"reason_code" in raw:
+    raise SystemExit("approved workflow catalog or export exposed a reason code")
 
 for surface in (empty_html, catalog_html, raw.decode("utf-8")):
     for value in (
@@ -561,7 +568,6 @@ for surface in (empty_html, catalog_html, raw.decode("utf-8")):
         os.environ["REVIEWER_CSRF"],
         "publication_key",
         "review_target_id",
-        "reason_code",
     ):
         if value in surface:
             raise SystemExit("approved workflow surface exposed private server evidence")
@@ -622,12 +628,14 @@ if (
         "occurrence_count",
         "provenance",
         "review_status",
+        "reason_code",
         "decided_at_us",
     }
     or item.get("command_sequence") != ["LINE", "TRIM", "LINE", "TRIM"]
     or item.get("occurrence_count") != 4
     or item.get("provenance") != "observed"
     or item.get("review_status") != "approved"
+    or item.get("reason_code") is not None
     or type(item.get("decided_at_us")) is not int
     or item["decided_at_us"] <= 0
 ):
@@ -900,6 +908,7 @@ for expected in (
     "Outcome 1",
     "LINE → TRIM → LINE → TRIM",
     "needs_changes",
+    "Insufficient evidence",
 ):
     if expected not in visible:
         raise SystemExit("terminal outcome was not visible")
@@ -949,6 +958,7 @@ expected_item = {
     "occurrence_count",
     "provenance",
     "review_status",
+    "reason_code",
     "decided_at_us",
 }
 if (
@@ -964,6 +974,7 @@ if (
     or payload["items"][0].get("occurrence_count") != 4
     or payload["items"][0].get("provenance") != "observed"
     or payload["items"][0].get("review_status") != "needs_changes"
+    or payload["items"][0].get("reason_code") != "evidence"
     or type(payload["items"][0].get("decided_at_us")) is not int
     or payload["items"][0]["decided_at_us"] <= 0
 ):

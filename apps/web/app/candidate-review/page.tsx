@@ -120,6 +120,7 @@ export default async function CandidateReviewPage() {
                   <th scope="col">Outcome</th>
                   <th scope="col">Commands</th>
                   <th scope="col">Status</th>
+                  <th scope="col">Reason</th>
                   <th scope="col">Decision time</th>
                 </tr>
               </thead>
@@ -129,6 +130,13 @@ export default async function CandidateReviewPage() {
                     <th scope="row">Outcome {row.ordinal}</th>
                     <td>{row.command_sequence.join(" → ")}</td>
                     <td>{row.review_status}</td>
+                    <td>
+                      {row.reason_code === "sequence"
+                        ? "Sequence mismatch"
+                        : row.reason_code === "evidence"
+                          ? "Insufficient evidence"
+                          : "No reason code"}
+                    </td>
                     <td>{row.decided_at}</td>
                   </tr>
                 ))}
