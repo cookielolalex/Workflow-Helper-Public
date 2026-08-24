@@ -347,6 +347,109 @@ def test_review_queue_includes_pending_and_suppresses_every_terminal_state(
     assert service.list_review_queue(_reviewer(), correlation_id=CORRELATION) == []
 
 
+def test_review_queue_distinguishes_absence_from_invalid_row_local_reads(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    publication_store, _control_store, control_service, service = _setup(tmp_path)
+    denied = _publish(publication_store, "1", now=1_000_000)
+    unavailable = _publish(publication_store, "4", now=1_100_000)
+    invalid_call = _publish(publication_store, "7", now=1_200_000)
+    wrong_type = _publish(publication_store, "a", now=1_300_000)
+    mismatched = _publish(publication_store, "d", now=1_400_000)
+    genuinely_absent = _publish(publication_store, "2", now=1_500_000)
+    original = control_service.read_candidate_review
+    _transition(control_service, mismatched, "pending", suffix="mismatched")
+    mismatched_projection = original(
+        _reviewer(),
+        review_target_id=mismatched.review_target_id,
+        correlation_id=CORRELATION,
+    )
+    assert mismatched_projection is not None
+
+    def defective_reads(*args: object, **kwargs: object):
+        target = kwargs["review_target_id"]
+        if target == denied.review_target_id:
+            raise AuthorizationDeniedError("row-local denial")
+        if target == unavailable.review_target_id:
+            raise ControlStoreError("row-local control failure")
+        if target == invalid_call.review_target_id:
+            raise TypeError("row-local invalid result")
+        if target == wrong_type.review_target_id:
+            return object()
+        if target == mismatched.review_target_id:
+            return replace(mismatched_projection, target_id=denied.review_target_id)
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(control_service, "read_candidate_review", defective_reads)
+
+    rows = service.list_review_queue(_reviewer(), correlation_id=CORRELATION)
+
+    assert [row.publication_key for row in rows] == [genuinely_absent.publication_key]
+    assert rows[0].review_status == "unreviewed"
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [
+        AuthorizationDeniedError("row-local second-read denial"),
+        ControlStoreError("row-local second-read control failure"),
+    ],
+)
+def test_review_queue_second_read_failure_suppresses_row_and_keeps_later_valid(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    failure: Exception,
+) -> None:
+    publication_store, _control_store, control_service, service = _setup(tmp_path)
+    raced = _publish(publication_store, "1", now=1_000_000)
+    later = _publish(publication_store, "4", now=1_100_000)
+    original = control_service.read_candidate_review
+    raced_reads = 0
+
+    def fail_second_read(*args: object, **kwargs: object):
+        nonlocal raced_reads
+        if kwargs["review_target_id"] == raced.review_target_id:
+            raced_reads += 1
+            if raced_reads == 2:
+                raise failure
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(control_service, "read_candidate_review", fail_second_read)
+
+    rows = service.list_review_queue(_reviewer(), correlation_id=CORRELATION)
+
+    assert [row.publication_key for row in rows] == [later.publication_key]
+    assert raced_reads == 2
+
+
+def test_review_queue_global_authority_and_page_failures_remain_fatal(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    publication_store, _control_store, _control_service, service = _setup(tmp_path)
+    _publish(publication_store, "1", now=1_000_000)
+
+    monkeypatch.setattr(
+        service,
+        "_verify_authority",
+        lambda: (_ for _ in ()).throw(
+            CandidateDiscoveryUnavailableError("global authority failure")
+        ),
+    )
+    with pytest.raises(CandidateDiscoveryUnavailableError, match="global authority failure"):
+        service.list_review_queue(_reviewer(), correlation_id=CORRELATION)
+
+    monkeypatch.undo()
+    monkeypatch.setattr(
+        publication_store,
+        "list_finalized",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("page failure")),
+    )
+    with pytest.raises(CandidateDiscoveryUnavailableError, match="authority is unavailable"):
+        service.list_review_queue(_reviewer(), correlation_id=CORRELATION)
+
+
 @pytest.mark.parametrize("status", ["approved", "rejected", "needs_changes"])
 def test_review_outcomes_return_only_verified_terminal_display_evidence(
     tmp_path: Path,
