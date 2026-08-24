@@ -1,41 +1,60 @@
 # Lean MVP scope
 
-## Included in this scaffold
+## Implemented synthetic vertical slice
 
-- Foreground AutoCAD detection and logical session lifecycle
-- Versioned session/event/label JSON contracts
-- Atomic local metadata package writer
-- API endpoints for health, registration, listing, and upload completion
-- Reference PostgreSQL schema for sessions, labels, skills, evidence, and audit
-- Processing pipeline interface and deterministic timeline summarization
-- Web dashboard and session detail route
-- Private S3 buckets with raw lifecycle expiration
-- SQS queue with dead-letter handling
-- CI and dependency-light repository validation
+The default API image and module-global application remain inert and fail
+closed. An explicitly guarded development-only Compose command can instead
+construct the sealed no-network synthetic runtime. That runtime currently
+provides:
 
-## Deferred behind explicit interfaces
+- the canonical rich synthetic session package and versioned contracts;
+- the default deterministic v2 worker path and durable timeline readback;
+- deterministic candidate derivation marked `observed` and `unreviewed`;
+- authenticated, server-only dashboard, session, and v2 timeline views; and
+- a bounded synthetic review action whose decision is durably recorded.
 
-- Real screen capture and user-visible recording controls
-- AutoCAD command plug-in and DWG-safe snapshot integration
-- Resumable multipart upload implementation
-- PostgreSQL repository and migrations
-- Authentication, device enrollment, RBAC, and audit persistence
-- AI labeling and candidate-skill extraction
-- Expert review mutations
-- Production compute/deployment and operational alerting
+The active development slice uses six component-local SQLite stores and an
+in-memory, no-network S3 oracle. PostgreSQL, LocalStack, S3, and SQS remain
+compatibility or rollback surfaces; they are not the active application stores
+or transport for this sealed slice. No live provider is connected.
+
+## Deferred behind explicit approval and interfaces
+
+- Production authentication, identity-provider integration, device enrollment,
+  RBAC operations, and live audit deployment
+- AI/model-assisted labeling or candidate extraction
+- Live-provider and production review workflows
+- Real screen capture, a user-visible recording pilot, AutoCAD plug-in capture,
+  and DWG-safe snapshot integration
+- Production PostgreSQL repositories and migrations, resumable multipart
+  upload, live S3/Drive adapters, compute deployment, and operational alerting
+
+These deferrals do not describe the synthetic slice as unauthenticated or
+review-inert: its fixed development identities, scoped proofs, candidate
+publication, and durable review are implemented and fail closed. They confer no
+production or live-data authority.
 
 ## Checkpoint acceptance criteria
 
-1. Contracts load and examples validate structurally.
-2. Python sources compile and unit tests pass when dependencies are installed.
-3. The Windows project builds on `windows-latest`.
-4. Web and infrastructure TypeScript compile in CI.
-5. Raw storage has an explicit expiration policy.
-6. No recorder can capture by default.
-7. No secret or real customer/employee artifact exists in the repository.
+1. Contracts and canonical examples validate structurally and semantically.
+2. The guarded smoke path proves register -> upload receipt -> default v2
+   processing -> durable timeline -> candidate visible -> authenticated review
+   -> durable empty unreviewed queue after an independent runtime reopen.
+3. The dashboard exposes exactly the canonical synthetic session, its detail,
+   v2 timeline and segments, and the bounded candidate-review route without
+   exposing raw credentials or candidate identifiers.
+4. Repository validation and the relevant API, worker, web, root, and
+   infrastructure checks are green. Public GitHub Actions run `32766238604`
+   completed `9/9` jobs successfully.
+5. Recording remains disabled by default, the default application remains
+   inert, and no secret or real customer or employee artifact is present.
 
-## Next milestone
+## Further work
 
-Run a synthetic session on one controlled Windows workstation, upload a small
-generated package, process it into a timeline, and display it in the session
-viewer. Use synthetic data until the privacy and security pilot gate is signed.
+This document does not authorize the next milestone. Under Decision 200, each
+new implementation step requires a separate SP dispatch and may not
+self-authorize from this scope description. The current result is not evidence
+of Windows capture readiness, live-pilot readiness, production readiness, or
+live-provider readiness. Any such step remains separately governed and must
+preserve synthetic-only operation, recording-off defaults, no real data, no
+model calls, no new spend, and no deployment unless explicitly approved.
