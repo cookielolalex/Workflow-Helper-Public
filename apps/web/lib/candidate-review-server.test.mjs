@@ -1,0 +1,280 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+
+import {
+  candidateReviewRedirect,
+  loadCandidateReviewQueue,
+  parseCandidateReviewActionRequest,
+  submitCandidateReviewAction,
+} from "./candidate-review-server.ts";
+
+const ORIGINAL_ENV = { ...process.env };
+const PUBLICATION_KEY =
+  "candidate-publication:1.0:01234567-89ab-4def-8123-456789abcdef";
+const REVIEW_TARGET =
+  "candidate-skill:1.0:fedcba98-7654-4321-8765-ba9876543210:sha256:" +
+  "a".repeat(64);
+const REVIEWER_PROOF = "reviewer-p3b-proof-abcdefghijklmnopqrstuvwxyz0123456789";
+const REVIEWER_SESSION = Buffer.from(
+  Array.from({ length: 32 }, (_, index) => index + 1),
+).toString("base64url");
+const REVIEWER_CSRF = Buffer.from(
+  Array.from({ length: 32 }, (_, index) => index + 33),
+).toString("base64url");
+
+test.afterEach(() => {
+  process.env = { ...ORIGINAL_ENV };
+});
+
+function configure() {
+  process.env.ENVIRONMENT = "development";
+  process.env.WORKFLOW_REVIEW_API_BASE_URL = "http://api:8000";
+  process.env.WORKFLOW_DEV_REVIEWER_PROOF = REVIEWER_PROOF;
+  process.env.WORKFLOW_DEV_REVIEWER_SESSION = REVIEWER_SESSION;
+  process.env.WORKFLOW_DEV_REVIEWER_CSRF = REVIEWER_CSRF;
+  process.env.WORKFLOW_REVIEW_BROWSER_ORIGIN = "http://127.0.0.1:3000";
+  process.env.WORKFLOW_REVIEW_BROWSER_HOST = "127.0.0.1:3000";
+  process.env.NEXT_PUBLIC_API_BASE_URL = "https://must-not-be-used.invalid";
+}
+
+function item() {
+  return {
+    publication_key: PUBLICATION_KEY,
+    schema_version: "1.0",
+    job_id: "job-private",
+    session_id: "session-private",
+    source_result_sha256: "b".repeat(64),
+    derivation_evidence_sha256: "c".repeat(64),
+    review_target_id: REVIEW_TARGET,
+    content_sha256: "d".repeat(64),
+    full_sha256: "e".repeat(64),
+    publication_identity: "f".repeat(64),
+    byte_length: 321,
+    state: "finalized",
+    finalized_at_us: 1_000_000,
+  };
+}
+
+function jsonResponse(status, body, extraHeaders = {}) {
+  const encoded = JSON.stringify(body);
+  return new Response(encoded, {
+    status,
+    headers: {
+      "content-length": String(Buffer.byteLength(encoded)),
+      "content-type": "application/json",
+      ...extraHeaders,
+    },
+  });
+}
+
+test("loads one redacted row through the existing synchronous GET validator", async () => {
+  configure();
+  const calls = [];
+  const fetcher = async (url, init) => {
+    calls.push({ url, init });
+    return jsonResponse(200, { items: [item()], count: 1, next_cursor: null });
+  };
+
+  const view = await loadCandidateReviewQueue(fetcher);
+
+  assert.deepEqual(view, {
+    status: "populated",
+    rows: [
+      {
+        ordinal: 1,
+        schema_version: "1.0",
+        byte_length: 321,
+        finalized_at: "1970-01-01T00:00:01.000Z",
+      },
+    ],
+  });
+  assert.equal(calls.length, 1);
+  assert.equal(
+    calls[0].url,
+    "http://api:8000/v1/control/candidate-publications?correlation_id=web-candidate-review&limit=100",
+  );
+  assert.equal(calls[0].init.method, "GET");
+  assert.equal(calls[0].init.redirect, "error");
+  assert.equal(calls[0].init.cache, "no-store");
+  assert.equal(calls[0].init.credentials, "omit");
+  assert.equal(calls[0].init.headers.get("cookie"), `workflow_session=${REVIEWER_SESSION}`);
+  assert.equal(calls[0].init.headers.get("x-workflow-dev-reviewer-proof"), REVIEWER_PROOF);
+  assert.equal(JSON.stringify(view).includes(PUBLICATION_KEY), false);
+  assert.equal(JSON.stringify(view).includes(REVIEW_TARGET), false);
+  assert.equal(JSON.stringify(view).includes(REVIEWER_PROOF), false);
+});
+
+test("re-fetches and binds the ordinal server-side before validated POST", async () => {
+  configure();
+  const calls = [];
+  const fetcher = async (url, init) => {
+    calls.push({ url, init });
+    if (calls.length === 1) {
+      return jsonResponse(200, { items: [item()], count: 1, next_cursor: null });
+    }
+    return jsonResponse(200, { status: "approved" });
+  };
+
+  const result = await submitCandidateReviewAction(1, "approve", fetcher);
+
+  assert.equal(result, "success");
+  assert.equal(calls.length, 2);
+  assert.equal(calls[1].init.method, "POST");
+  assert.equal(calls[1].init.redirect, "error");
+  assert.match(calls[1].url, /candidate-publication%3A1\.0%3A/);
+  const body = JSON.parse(calls[1].init.body);
+  assert.equal(body.review_target_id, REVIEW_TARGET);
+  assert.equal(body.status, "approved");
+  assert.equal(body.correlation_id, "web-candidate-action");
+  assert.match(body.idempotency_key, /^web-dev-[a-f0-9]{64}$/);
+  assert.equal(calls[1].init.headers.get("origin"), "https://review.synthetic.example");
+  assert.equal(calls[1].init.headers.get("x-csrf-token"), REVIEWER_CSRF);
+  assert.equal(JSON.stringify(result).includes(PUBLICATION_KEY), false);
+});
+
+test("malformed cached GET or POST responses fail closed without leaking details", async () => {
+  configure();
+  let calls = 0;
+  const invalidList = async () => {
+    calls += 1;
+    return jsonResponse(200, {
+      items: [{ ...item(), unexpected: "private" }],
+      count: 1,
+      next_cursor: null,
+    });
+  };
+  assert.equal(await submitCandidateReviewAction(1, "approve", invalidList), "unavailable");
+  assert.equal(calls, 1);
+
+  calls = 0;
+  const mismatchedPost = async () => {
+    calls += 1;
+    return calls === 1
+      ? jsonResponse(200, { items: [item()], count: 1, next_cursor: null })
+      : jsonResponse(200, { status: "rejected", detail: "private" });
+  };
+  assert.equal(await submitCandidateReviewAction(1, "approve", mismatchedPost), "unavailable");
+  assert.equal(calls, 2);
+});
+
+test("environment, API base, credentials, redirects, and byte bounds fail closed", async () => {
+  configure();
+  let calls = 0;
+  const fetcher = async () => {
+    calls += 1;
+    return jsonResponse(200, { items: [], count: 0, next_cursor: null });
+  };
+  for (const mutate of [
+    () => { process.env.ENVIRONMENT = "production"; },
+    () => { process.env.WORKFLOW_REVIEW_API_BASE_URL = "http://evil.example:8000"; },
+    () => { process.env.WORKFLOW_DEV_REVIEWER_PROOF = "test"; },
+    () => { process.env.WORKFLOW_DEV_REVIEWER_SESSION = "A".repeat(43); },
+    () => { process.env.WORKFLOW_REVIEW_BROWSER_HOST = "localhost:3000"; },
+  ]) {
+    configure();
+    mutate();
+    assert.deepEqual(await loadCandidateReviewQueue(fetcher), { status: "unavailable" });
+  }
+  assert.equal(calls, 0);
+
+  configure();
+  const redirected = async () => {
+    const response = jsonResponse(200, { items: [], count: 0, next_cursor: null });
+    Object.defineProperty(response, "redirected", { value: true });
+    return response;
+  };
+  assert.deepEqual(await loadCandidateReviewQueue(redirected), { status: "unavailable" });
+
+  const oversized = async () => jsonResponse(
+    200,
+    { items: [], count: 0, next_cursor: null },
+    { "content-length": "262145" },
+  );
+  assert.deepEqual(await loadCandidateReviewQueue(oversized), { status: "unavailable" });
+});
+
+function actionRequest(
+  body,
+  headers = {},
+  url = "http://127.0.0.1:3000/candidate-review/action",
+  method = "POST",
+) {
+  return new Request(url, {
+    method,
+    headers: {
+      host: "127.0.0.1:3000",
+      origin: "http://127.0.0.1:3000",
+      "content-type": "application/x-www-form-urlencoded",
+      "content-length": String(Buffer.byteLength(body)),
+      ...headers,
+    },
+    ...(method === "GET" || method === "HEAD" ? {} : { body }),
+  });
+}
+
+test("accepts only the exact same-origin two-field ordinal/action form", async () => {
+  configure();
+  assert.deepEqual(
+    await parseCandidateReviewActionRequest(actionRequest("ordinal=1&action=approve")),
+    { ordinal: 1, action: "approve" },
+  );
+  assert.deepEqual(
+    await parseCandidateReviewActionRequest(actionRequest("ordinal=100&action=reject")),
+    { ordinal: 100, action: "reject" },
+  );
+  assert.deepEqual(
+    await parseCandidateReviewActionRequest(
+      actionRequest(
+        "ordinal=1&action=approve",
+        {},
+        "http://web:3000/candidate-review/action",
+      ),
+    ),
+    { ordinal: 1, action: "approve" },
+  );
+
+  for (const request of [
+    actionRequest(
+      "ordinal=1&action=approve",
+      {},
+      "http://web:3000/candidate-review",
+    ),
+    actionRequest(
+      "ordinal=1&action=approve",
+      {},
+      "http://web:3000/candidate-review/action?next=private",
+    ),
+    actionRequest(
+      "ordinal=1&action=approve",
+      {},
+      "http://web:3000/candidate-review/action",
+      "GET",
+    ),
+    actionRequest("action=approve&ordinal=1"),
+    actionRequest("ordinal=01&action=approve"),
+    actionRequest("ordinal=1&action=approved"),
+    actionRequest("ordinal=1&action=approve&extra=x"),
+    actionRequest("ordinal=candidate-publication%3A1.0%3Araw&action=approve"),
+    actionRequest("ordinal=1&action=approve", { "content-type": "application/json" }),
+    actionRequest("ordinal=1&action=approve", { cookie: "private=1" }),
+    actionRequest("ordinal=1&action=approve", { authorization: "Bearer private" }),
+    actionRequest("ordinal=1&action=approve", { origin: "http://localhost:3000" }),
+    actionRequest("ordinal=1&action=approve", { host: "localhost:3000" }),
+    actionRequest("ordinal=1&action=approve", { "x-workflow-dev-proof": "private" }),
+    actionRequest("ordinal=1&action=approve", {
+      "x-workflow-dev-reviewer-proof": "private",
+    }),
+    actionRequest("ordinal=1&action=approve", { "x-csrf-token": "private" }),
+  ]) {
+    assert.equal(await parseCandidateReviewActionRequest(request), null);
+  }
+});
+
+test("returns one fixed generic bodyless 303", async () => {
+  const response = candidateReviewRedirect();
+  assert.equal(response.status, 303);
+  assert.equal(response.headers.get("location"), "/candidate-review");
+  assert.equal(response.headers.get("cache-control"), "no-store");
+  assert.equal(response.headers.get("referrer-policy"), "no-referrer");
+  assert.equal(await response.text(), "");
+});

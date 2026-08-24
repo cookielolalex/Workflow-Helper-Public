@@ -66,18 +66,18 @@ serves only `GET /health` as usable (`environment=unconfigured`), returns `404`
 for `/docs`, `/redoc`, and `/openapi.json`, and returns bounded `503`
 responses from all protected operations.
 
-Compose remains a compatibility topology, not an end-to-end implementation of
-the intended diagram. Its `api` service has an explicit command override to
-`workflow_api.dev_server`, but only when the caller supplies an explicit
-dev-like environment, a fresh absolute data directory, and fresh synthetic
-proof/session material. That entrypoint constructs the sealed
+Compose remains a synthetic development topology, not an implementation of the
+intended live-provider diagram. Its `api` service has an explicit command
+override to `workflow_api.dev_server`, but only when the caller supplies an
+explicit dev-like environment, a fresh absolute data directory, and fresh
+synthetic proof/session material. That entrypoint constructs the sealed
 `create_in_process_no_network_bundle()` graph, binds `create_app(bundle)`, and
 uses six component-local SQLite stores plus the no-network artifact oracle.
 The default image command remains inert. Compose still starts PostgreSQL and
-LocalStack, but no dev API or worker code opens PostgreSQL. The named
-PostgreSQL volume is unused application state; the compose topology is not
-itself the end-to-end proof. The hermetic vertical slice below is the bounded
-activation proof for the worker and candidate-publication path.
+LocalStack for compatibility, but the activated development slice uses neither:
+the seed harness drives the sealed API in-process with an in-memory S3 oracle,
+and no dev API or worker code opens PostgreSQL. The named PostgreSQL volume is
+unused application state.
 
 The repository contains an `InMemorySessionRepository`, but no runtime
 dependency installs it. It also contains durable SQLite reference components,
@@ -101,6 +101,44 @@ network failures. Its dashboard renders an empty session list; its detail route
 renders not found. It does not distinguish service unavailability from genuine
 absence. Phase 1 owns an explicit unavailable/error state; until then, web
 emptiness is not readiness or successful readback evidence.
+
+## P3b development review activation
+
+The explicit Compose development runtime now activates the P3a candidate chain
+through one bounded synthetic review action. A one-shot seed container mounts
+the canonical synthetic contract and worker source read-only, drives the sealed
+API with a bounded standard-library ASGI harness and in-memory S3 implementation,
+records the upload receipt, runs the default v2 worker path, and proves processing
+completion precedes candidate publication. It supplies a separate explicit
+development proof header; it does not use ambient credentials or a network
+provider.
+
+The seed process opens an already-created runtime through a non-serving helper.
+That helper requires the exact six canonical SQLite databases, admits only their
+exact `-wal` and `-shm` sidecars, rejects symlinks and unsafe ownership or modes,
+and pins device and inode identity. It computes deterministic type-safe schema
+and all-row digests through read-only connections before and after constructing
+the bundle, and fails closed on any difference. It performs no directory
+creation, registration, repair, or migration; constructor housekeeping is the
+only permitted interaction.
+
+The development web route receives its API base, reviewer proof, browser-session
+material, CSRF material, browser origin, and host only as server-side runtime
+configuration. None uses a `NEXT_PUBLIC_` variable. The page exposes a redacted
+candidate queue and ordinal review forms, while raw publication and review-target
+identifiers remain inside the server helper. Its same-origin action route accepts
+only the configured origin and host plus one exact bounded URL-encoded ordinal
+and action, re-fetches the queue to bind that ordinal, and returns a fixed
+bodyless `303` redirect without exposing downstream details.
+
+`scripts/dev-runtime-smoke.sh` creates a uniquely named project and temporary
+environment, waits for the seed and web services, proves one live redacted
+candidate, submits an actual same-origin review action, proves the durable queue
+is empty, and confirms that an independent existing-runtime opener observes the
+same empty state. Cleanup is limited to the script's own synthetic project,
+volumes, and temporary directory. This is synthetic, recording-off, no-network
+application evidence only: it adds no live provider, real credential, real data,
+screen capture, model call, deployment, or recurring spend.
 
 ## P3a activation slice
 
@@ -225,8 +263,10 @@ service seams. The session plane has an explicitly injectable provider-neutral
 security composition and durable SQLite reference store. A separate SQLite
 reference specifies digest-only browser-session lifecycle authority. The sealed
 runtime bundle can compose preconstructed synthetic authorities for a fresh app
-without changing the default. Compose installs none of them and does not use
-PostgreSQL. S3/LocalStack remains compatibility behavior. A live Drive adapter,
+without changing the default. The explicit development Compose command installs
+that sealed bundle and its synthetic seed/review slice; the default image does
+not. The slice does not use PostgreSQL. S3/LocalStack remains compatibility
+behavior. A live Drive adapter,
 Google workload identity, production SSO/IdP integration, durable live stores,
 and a real-data control plane remain future gated work.
 
@@ -246,10 +286,12 @@ review state. No Site deployment is authorized by this code-only package.
 
 ### Current web scaffold
 
-The checked Next.js app is a local scaffold, not the intended ChatGPT Site. It
-masks API unavailability as an empty dashboard or not-found detail page and has
-no authenticated browser-session composition. Phase 1 must add an explicit
-unavailable UI before it can provide honest operational readback.
+The checked Next.js app is a local scaffold, not the intended ChatGPT Site. Its
+dashboard and detail pages still mask API unavailability as empty or not found.
+Only the explicit development candidate-review route is activated: it uses
+server-only synthetic reviewer/session material, renders redacted records, and
+submits ordinal actions through its same-origin server route. It is not a live
+identity integration, deployment, or general operational-readback claim.
 
 ### S3 compatibility adapter
 

@@ -11,12 +11,18 @@ from __future__ import annotations
 import base64
 import binascii
 import hashlib
+import json
+import math
 import os
 import re
+import sqlite3
+import stat
+from contextlib import ExitStack, closing
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Final
+from urllib.parse import quote
 
 from starlette.datastructures import Headers
 from starlette.requests import Request
@@ -104,8 +110,18 @@ _FORBIDDEN_PROOF_VALUES: Final = frozenset(
 _SCOPE = TenantWorkspaceScope("tenant.synthetic", "workspace.synthetic")
 _CAPTURE_SUBJECT = "capture-uploader.synthetic"
 _WORKER_SUBJECT = "worker.synthetic"
-_REVIEWER_SUBJECT = "reviewer.synthetic"
+_REVIEWER_SUBJECT = "reviewer_synthetic"
 _REVIEWER_ORIGIN = "https://review.synthetic.example"
+_DATABASE_NAMES: Final = (
+    "browser.sqlite3",
+    "candidate-publications.sqlite3",
+    "control.sqlite3",
+    "legacy.sqlite3",
+    "retention.sqlite3",
+    "safety.sqlite3",
+)
+_MAX_EXISTING_DATABASE_BYTES: Final = 64 * 1024 * 1024
+_MAX_EXISTING_DATABASE_ROWS: Final = 100_000
 
 
 @dataclass(frozen=True, slots=True)
@@ -117,6 +133,197 @@ class _DevCredentials:
     reviewer_proof: str
     reviewer_session: str
     reviewer_csrf: str
+
+
+@dataclass(frozen=True, slots=True)
+class _PathIdentity:
+    owner: int
+    mode: int
+    device: int
+    inode: int
+
+
+@dataclass(frozen=True, slots=True)
+class _ExistingRuntimeSnapshot:
+    directory: _PathIdentity
+    databases: tuple[tuple[str, _PathIdentity, str], ...]
+    sidecars: tuple[tuple[str, _PathIdentity], ...]
+
+
+def _path_identity(path: Path, *, directory: bool) -> _PathIdentity:
+    try:
+        metadata = os.lstat(path)
+    except OSError as exc:
+        raise RuntimeError("existing synthetic runtime path is unavailable") from exc
+    expected = stat.S_ISDIR if directory else stat.S_ISREG
+    if (
+        not expected(metadata.st_mode)
+        or stat.S_ISLNK(metadata.st_mode)
+        or metadata.st_uid != os.geteuid()
+        or stat.S_IMODE(metadata.st_mode) & 0o7022
+    ):
+        raise RuntimeError("existing synthetic runtime path is unsafe")
+    return _PathIdentity(
+        owner=metadata.st_uid,
+        mode=stat.S_IMODE(metadata.st_mode),
+        device=metadata.st_dev,
+        inode=metadata.st_ino,
+    )
+
+
+def _typed_sqlite_value(value: object) -> tuple[str, str]:
+    if value is None:
+        return ("null", "")
+    if type(value) is int:
+        return ("integer", str(value))
+    if type(value) is float and math.isfinite(value):
+        return ("real", value.hex())
+    if type(value) is str:
+        return ("text", value)
+    if type(value) is bytes:
+        return ("blob", value.hex())
+    raise RuntimeError("existing synthetic runtime contains an unsupported SQLite value")
+
+
+def _digest_record(hasher: object, label: str, values: tuple[object, ...]) -> None:
+    encoded = json.dumps(
+        [label, *(_typed_sqlite_value(value) for value in values)],
+        ensure_ascii=False,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    hasher.update(len(encoded).to_bytes(8, "big"))
+    hasher.update(encoded)
+
+
+def _quoted_identifier(value: str) -> str:
+    if type(value) is not str or not value or "\0" in value:
+        raise RuntimeError("existing synthetic runtime schema is invalid")
+    return '"' + value.replace('"', '""') + '"'
+
+
+def _database_digest(path: Path) -> str:
+    if path.stat().st_size > _MAX_EXISTING_DATABASE_BYTES:
+        raise RuntimeError("existing synthetic runtime database exceeds its bound")
+    uri = f"file:{quote(str(path), safe='/')}?mode=ro"
+    hasher = hashlib.sha256()
+    try:
+        with closing(sqlite3.connect(uri, uri=True)) as connection:
+            connection.execute("pragma query_only = on")
+            connection.execute("begin")
+            try:
+                if connection.execute("pragma integrity_check").fetchall() != [("ok",)]:
+                    raise RuntimeError(
+                        "existing synthetic runtime database failed integrity check"
+                    )
+                schema = connection.execute(
+                    "select type, name, tbl_name, rootpage, sql "
+                    "from sqlite_schema order by type, name, tbl_name, rootpage, sql"
+                ).fetchall()
+                for row in schema:
+                    _digest_record(hasher, "schema", tuple(row))
+
+                tables = sorted(
+                    row[0]
+                    for row in connection.execute(
+                        "select name from sqlite_schema where type = 'table'"
+                    ).fetchall()
+                )
+                row_count = 0
+                for table in tables:
+                    rows: list[bytes] = []
+                    query = f"select * from {_quoted_identifier(table)}"
+                    for row in connection.execute(query):
+                        row_count += 1
+                        if row_count > _MAX_EXISTING_DATABASE_ROWS:
+                            raise RuntimeError(
+                                "existing synthetic runtime database exceeds its row bound"
+                            )
+                        rows.append(
+                            json.dumps(
+                                [_typed_sqlite_value(value) for value in row],
+                                ensure_ascii=False,
+                                separators=(",", ":"),
+                            ).encode("utf-8")
+                        )
+                    _digest_record(hasher, "table", (table,))
+                    for row in sorted(rows):
+                        hasher.update(len(row).to_bytes(8, "big"))
+                        hasher.update(row)
+            finally:
+                connection.rollback()
+    except sqlite3.Error as exc:
+        raise RuntimeError("existing synthetic runtime database is unavailable") from exc
+    return hasher.hexdigest()
+
+
+def _existing_runtime_snapshot(data_dir: Path) -> _ExistingRuntimeSnapshot:
+    directory = _path_identity(data_dir, directory=True)
+    try:
+        initial_entries = tuple(data_dir.iterdir())
+    except OSError as exc:
+        raise RuntimeError("existing synthetic runtime directory is unavailable") from exc
+    allowed_sidecars = {
+        f"{name}{suffix}"
+        for name in _DATABASE_NAMES
+        for suffix in ("-shm", "-wal")
+    }
+    initial_names = {path.name for path in initial_entries}
+    if (
+        not set(_DATABASE_NAMES).issubset(initial_names)
+        or initial_names - set(_DATABASE_NAMES) - allowed_sidecars
+    ):
+        raise RuntimeError("existing synthetic runtime must contain exactly six databases")
+    databases = []
+    for name in _DATABASE_NAMES:
+        path = data_dir / name
+        identity = _path_identity(path, directory=False)
+        if identity.device != directory.device:
+            raise RuntimeError("existing synthetic runtime path is unsafe")
+        databases.append((name, identity, _database_digest(path)))
+        if _path_identity(path, directory=False) != identity:
+            raise RuntimeError("existing synthetic runtime identity changed during validation")
+    try:
+        final_entries = tuple(data_dir.iterdir())
+    except OSError as exc:
+        raise RuntimeError("existing synthetic runtime directory is unavailable") from exc
+    final_names = {path.name for path in final_entries}
+    if (
+        not set(_DATABASE_NAMES).issubset(final_names)
+        or final_names - set(_DATABASE_NAMES) - allowed_sidecars
+    ):
+        raise RuntimeError("existing synthetic runtime must contain exactly six databases")
+    sidecars = []
+    for path in sorted(final_entries, key=lambda item: item.name):
+        if path.name in allowed_sidecars:
+            identity = _path_identity(path, directory=False)
+            if identity.device != directory.device:
+                raise RuntimeError("existing synthetic runtime path is unsafe")
+            sidecars.append((path.name, identity))
+    if _path_identity(data_dir, directory=True) != directory:
+        raise RuntimeError("existing synthetic runtime identity changed during validation")
+    return _ExistingRuntimeSnapshot(directory, tuple(databases), tuple(sidecars))
+
+
+def _validate_existing_runtime_paths(data_dir: Path) -> None:
+    """Reject unsafe database paths before opening any SQLite connection."""
+
+    directory = _path_identity(data_dir, directory=True)
+    try:
+        entries = tuple(data_dir.iterdir())
+    except OSError as exc:
+        raise RuntimeError("existing synthetic runtime directory is unavailable") from exc
+    allowed_names = set(_DATABASE_NAMES) | {
+        f"{name}{suffix}"
+        for name in _DATABASE_NAMES
+        for suffix in ("-shm", "-wal")
+    }
+    names = {path.name for path in entries}
+    if not set(_DATABASE_NAMES).issubset(names) or names - allowed_names:
+        raise RuntimeError("existing synthetic runtime must contain exactly six databases")
+    for path in entries:
+        identity = _path_identity(path, directory=False)
+        if identity.device != directory.device:
+            raise RuntimeError("existing synthetic runtime path is unsafe")
 
 
 class _DevAuthenticator:
@@ -264,6 +471,24 @@ def _required_data_dir() -> Path:
     return path
 
 
+def _required_existing_data_dir() -> Path:
+    value = os.environ.get("WORKFLOW_DEV_DATA_DIR")
+    if type(value) is not str or value != value.strip() or not value:
+        raise RuntimeError("WORKFLOW_DEV_DATA_DIR must be an absolute dedicated path")
+    path = Path(value)
+    if (
+        not path.is_absolute()
+        or path == Path("/")
+        or len(path.parts) < 3
+        or ".." in path.parts
+        or path.is_symlink()
+        or not path.parent.is_dir()
+        or not path.is_dir()
+    ):
+        raise RuntimeError("WORKFLOW_DEV_DATA_DIR must contain an existing runtime")
+    return path
+
+
 def _read_credentials() -> _DevCredentials:
     _reject_provider_sources()
     credentials = _DevCredentials(
@@ -317,12 +542,18 @@ def _session_digest(material: str) -> str:
     return hashlib.sha256(raw).hexdigest()
 
 
-def _build_bundle(
+def _construct_bundle(
     *,
     data_dir: Path,
     credentials: _DevCredentials,
-) -> SealedSyntheticRuntimeBundle:
-    """Construct one fixed synthetic graph after all outer guards pass."""
+    create_directory: bool,
+) -> tuple[
+    SealedSyntheticRuntimeBundle,
+    AuthenticatedPrincipal,
+    AuthenticatedPrincipal,
+    AuthenticatedPrincipal,
+]:
+    """Construct one fixed graph without registering durable identities."""
 
     from .in_process_runtime import create_in_process_no_network_bundle
 
@@ -361,7 +592,8 @@ def _build_bundle(
         worker_proof=credentials.worker_proof,
     )
 
-    data_dir.mkdir(parents=True, exist_ok=False)
+    if create_directory:
+        data_dir.mkdir(parents=True, exist_ok=False)
     bundle = create_in_process_no_network_bundle(
         data_dir=data_dir,
         settings=_synthetic_settings(),
@@ -369,6 +601,21 @@ def _build_bundle(
         subject_scope_policy=policy,
         authenticator_factory=authenticator_factory,
         workload_credential_verifier_factory=lambda _request: provider,
+    )
+    return bundle, capture, worker, reviewer
+
+
+def _build_bundle(
+    *,
+    data_dir: Path,
+    credentials: _DevCredentials,
+) -> SealedSyntheticRuntimeBundle:
+    """Construct and initialize one fresh fixed synthetic graph."""
+
+    bundle, _capture, _worker, reviewer = _construct_bundle(
+        data_dir=data_dir,
+        credentials=credentials,
+        create_directory=True,
     )
     now = datetime.now(UTC)
     bundle.legacy_store.register_workload_principal(
@@ -400,6 +647,46 @@ def _build_bundle(
     return bundle
 
 
+def _open_existing_bundle(
+    *,
+    data_dir: Path,
+    credentials: _DevCredentials,
+) -> SealedSyntheticRuntimeBundle:
+    """Open one exact existing graph without initialization or repair calls."""
+
+    _validate_existing_runtime_paths(data_dir)
+    with ExitStack() as connections:
+        for name in _DATABASE_NAMES:
+            uri = f"file:{quote(str(data_dir / name), safe='/')}?mode=ro"
+            connection: sqlite3.Connection | None = None
+            try:
+                connection = sqlite3.connect(uri, uri=True)
+                connection.execute("pragma query_only = on")
+                journal_mode = connection.execute("pragma journal_mode").fetchone()
+                if journal_mode == ("wal",):
+                    connection.execute("begin")
+                    connection.execute("select count(*) from sqlite_schema").fetchone()
+                    connections.enter_context(closing(connection))
+                    connection = None
+            except sqlite3.Error as exc:
+                raise RuntimeError(
+                    "existing synthetic runtime database is unavailable"
+                ) from exc
+            finally:
+                if connection is not None:
+                    connection.close()
+        before = _existing_runtime_snapshot(data_dir)
+        bundle, _capture, _worker, _reviewer = _construct_bundle(
+            data_dir=data_dir,
+            credentials=credentials,
+            create_directory=False,
+        )
+        after = _existing_runtime_snapshot(data_dir)
+        if after != before:
+            raise RuntimeError("existing synthetic runtime changed while opening")
+    return bundle
+
+
 def build_app():
     """Build one fresh synthetic app, guarded by the outer dev contract."""
 
@@ -409,6 +696,19 @@ def build_app():
     from .main import create_app
 
     return create_app(_build_bundle(data_dir=data_dir, credentials=credentials))
+
+
+def open_existing_app():
+    """Open an existing synthetic app for a bounded non-serving harness."""
+
+    _require_dev_environment()
+    credentials = _read_credentials()
+    data_dir = _required_existing_data_dir()
+    from .main import create_app
+
+    return create_app(
+        _open_existing_bundle(data_dir=data_dir, credentials=credentials)
+    )
 
 
 def main() -> None:
