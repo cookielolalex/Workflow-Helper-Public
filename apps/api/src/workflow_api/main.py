@@ -18,6 +18,7 @@ from .routes.datasets import router as dataset_router
 from .routes.health import router as health_router
 from .routes.retention import router as retention_router
 from .routes.safety import router as safety_router
+from .routes.sessions import candidate_internal_router
 from .routes.sessions import internal_router as internal_sessions_router
 from .routes.sessions import router as sessions_router
 from .runtime_bundle import SealedSyntheticRuntimeBundle, _validate_candidate_pair
@@ -122,10 +123,11 @@ def create_app(bundle: SealedSyntheticRuntimeBundle | None = None) -> FastAPI:
     application.include_router(safety_router, dependencies=control_session_dependencies)
 
     if _candidate_registration_allowed(bundle):
-        # Keep the dormant router import itself behind the explicit synthetic
-        # activation boundary.  The route's own dependency remains the only
-        # application override; auth and session security are shared with the
-        # existing private control routes above.
+        # Keep candidate publication behind the explicit synthetic activation
+        # boundary.  Processing completion remains on the always-present
+        # internal router; publication is a separate route surface so the
+        # inert default app cannot expose it.
+        application.include_router(candidate_internal_router)
         from .candidate_publication_service import CandidatePublicationService
         from .routes.candidate_discovery import (
             get_candidate_discovery_service,

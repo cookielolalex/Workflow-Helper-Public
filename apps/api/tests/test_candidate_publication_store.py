@@ -426,7 +426,7 @@ def test_unicode_and_duplicate_identity_are_not_normalized() -> None:
         artifact_digit="8",
         size_bytes=256,
         drawing_ref="café",
-        commands=["ÉLINE", "LINE"],
+        commands=["ÉLINE", "LINE", "ÉLINE", "LINE"],
     )
     nfd = _golden_evidence(
         label="unicode-nfd",
@@ -435,23 +435,23 @@ def test_unicode_and_duplicate_identity_are_not_normalized() -> None:
         artifact_digit="9",
         size_bytes=256,
         drawing_ref="cafe\u0301",
-        commands=["E\u0301LINE", "LINE"],
+        commands=["E\u0301LINE", "LINE", "E\u0301LINE", "LINE"],
     )
     nfc_full = canonical_candidate_publication_bytes(nfc)
     nfc_content = canonical_candidate_content_bytes(build_candidate_publication_body(nfc))
     nfd_full = canonical_candidate_publication_bytes(nfd)
     nfd_content = canonical_candidate_content_bytes(build_candidate_publication_body(nfd))
     assert hashlib.sha256(nfc_content).hexdigest() == (
-        "7f25ab29de811483881575564ddb92399a5fa6ff42675b579a4fe9dd603cf72f"
+        "1313d5efa271c53daff0fd3a4806ad282c7d030ced55d0ee7703907a0766c5ef"
     )
     assert hashlib.sha256(nfc_full).hexdigest() == (
-        "550a0773171035c5cea0b61e34db3cf8e4199941f267a2984a4cb732a675239b"
+        "f28aec8fe17382f92360757326ebc63c25480cd42f915def3d4b06b48cdb5546"
     )
     assert hashlib.sha256(nfd_content).hexdigest() == (
-        "8e505afe7470163f2e6dbe29e13e088713153fce063b0122e0ca2e0ef25ef9d9"
+        "6922c6fc4bb78b62bef4244a7d7949158261a5b45b366cb0ce6ad5616c0383e8"
     )
     assert hashlib.sha256(nfd_full).hexdigest() == (
-        "4b4f5dfdbd0a2ec40c48bdb075371e7e7f10eaf5ed4ba4bfa773fb10d3fd9a3b"
+        "5f383ae3178ef27bde0fd3032d36ef4e872dc6bbe09b3c8cc391dbee77fc0b3f"
     )
     assert nfc_full != nfd_full and nfc_content != nfd_content
 

@@ -74,9 +74,10 @@ proof/session material. That entrypoint constructs the sealed
 `create_in_process_no_network_bundle()` graph, binds `create_app(bundle)`, and
 uses six component-local SQLite stores plus the no-network artifact oracle.
 The default image command remains inert. Compose still starts PostgreSQL and
-LocalStack, but no dev API or worker code opens PostgreSQL and the synthetic
-dev API does not claim a worker queue, candidate producer, or web readback
-slice. The named PostgreSQL volume is unused application state.
+LocalStack, but no dev API or worker code opens PostgreSQL. The named
+PostgreSQL volume is unused application state; the compose topology is not
+itself the end-to-end proof. The hermetic vertical slice below is the bounded
+activation proof for the worker and candidate-publication path.
 
 The repository contains an `InMemorySessionRepository`, but no runtime
 dependency installs it. It also contains durable SQLite reference components,
@@ -100,6 +101,35 @@ network failures. Its dashboard renders an empty session list; its detail route
 renders not found. It does not distinguish service unavailability from genuine
 absence. Phase 1 owns an explicit unavailable/error state; until then, web
 emptiness is not readiness or successful readback evidence.
+
+## P3a activation slice
+
+The existing v1 queue envelope is the only worker transport. The worker's
+bounded v1-to-v2 adapter derives a fixed UUIDv5 job identity, publishes the
+v2 timeline artifact, and sends the existing processing-completion callback
+before an optional candidate-publication callback. Both callbacks use the
+existing worker token and bounded retry policy; queue deletion remains gated on
+both callbacks succeeding. Replays produce byte- and identity-stable evidence.
+
+Candidate derivation is deterministic and synthetic-only. It admits one
+contiguous CAD run surrounded only by `session_started`, `drawing_opened`,
+`drawing_saved`, and `session_ended` lifecycle events. The run must contain
+between two and sixty-four commands and repeat its smallest exact command
+period at least twice. Published candidates retain every observed occurrence,
+are marked `provenance: observed` and `approval_status: unreviewed`, and are
+never reviewed or approved by the producer.
+
+The hidden worker callback route is available only through an exact sealed
+runtime bundle. It first reads the scoped durable v2 timeline and requires an
+exact match with the submitted result, then delegates the complete evidence
+envelope to the existing candidate publication service and store. Unknown
+fields, missing or unprocessed timelines, mismatches, and store failures fail
+closed before candidate mutation. The reviewer discovery route exposes only
+finalized, unreviewed metadata from that same bundle; the root vertical-slice
+test proves register → upload receipt → v2 completion → candidate publication
+→ reviewer visibility and visibility after reconstructing the bundle from its
+SQLite paths. No live provider, credentials, screen capture, model call, or
+approval action is involved.
 
 ## Persistent control-plane reference
 

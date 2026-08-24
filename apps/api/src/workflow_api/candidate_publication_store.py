@@ -1,4 +1,4 @@
-"""Dormant, provider-neutral immutable candidate publication bytes.
+"""Provider-neutral immutable candidate publication bytes.
 
 This module is deliberately an isolated component.  Importing it does not open
 or create a database; callers must explicitly construct a store with a path.
@@ -1444,6 +1444,12 @@ def _admit_timeline_artifact(value: Mapping[str, Any]) -> dict[str, Any]:
 def _derive_occurrences(result: ProcessingResultV2) -> tuple[list[dict[str, Any]], str, int]:
     timeline = list(result.timeline)
     segments = list(result.operation_segments)
+    admitted_lifecycle = {
+        "session_started",
+        "drawing_opened",
+        "drawing_saved",
+        "session_ended",
+    }
     by_event: dict[UUID, Any] = {}
     for segment in segments:
         if len(segment.command_names) != 1 or len(segment.source_event_ids) != 1:
@@ -1453,38 +1459,63 @@ def _derive_occurrences(result: ProcessingResultV2) -> tuple[list[dict[str, Any]
             raise CandidatePublicationValidationError("source event maps to multiple segments")
         by_event[event_id] = segment
 
-    units: list[tuple[str, Any, Any]] = []
-    for item in timeline:
-        segment = by_event.get(item.source_event_id)
-        if item.event_type.value != "cad_command":
-            raise NoCandidateError("a non-CAD timeline event breaks the qualifying run")
-        if segment is None:
-            raise CandidatePublicationValidationError("CAD event has no operation segment")
-        units.append(("cad", item, segment))
+    timeline_ids = {item.source_event_id for item in timeline}
+    cad_ids = {
+        item.source_event_id
+        for item in timeline
+        if item.event_type.value == "cad_command"
+    }
+    if set(by_event) - timeline_ids:
+        raise CandidatePublicationValidationError("operation segment source evidence is not in the timeline")
+    if set(by_event) - cad_ids:
+        raise CandidatePublicationValidationError("non-CAD timeline events cannot have operation segments")
+    if cad_ids - set(by_event):
+        raise CandidatePublicationValidationError("CAD event has no operation segment")
 
-    drawing_refs = {segment.drawing_ref for _, _, segment in units}
-    if len(drawing_refs) != 1:
-        raise NoCandidateError("qualifying timeline changes drawing_ref")
+    units: list[tuple[str, Any, Any | None]] = []
+    for item in timeline:
+        event_type = item.event_type.value
+        if event_type == "cad_command":
+            units.append(("cad", item, by_event[item.source_event_id]))
+        elif event_type in admitted_lifecycle:
+            units.append(("lifecycle", item, None))
+        else:
+            raise NoCandidateError("timeline contains a non-admitted non-CAD event")
 
     runs: list[list[tuple[Any, Any]]] = []
     current: list[tuple[Any, Any]] = []
     for kind, item, segment in units:
-        if kind != "cad":
-            if len(current) >= 2:
+        if kind == "lifecycle":
+            if current:
                 runs.append(current)
-            current = []
+                current = []
             continue
-        if current and segment.drawing_ref != current[-1][1].drawing_ref:
-            if len(current) >= 2:
-                runs.append(current)
-            current = []
+        assert segment is not None
         current.append((item, segment))
-    if len(current) >= 2:
+    if current:
         runs.append(current)
     if len(runs) != 1 or not 2 <= len(runs[0]) <= 64:
         raise NoCandidateError("result has no unique qualifying CAD run")
+
     run = runs[0]
+    drawing_refs = {segment.drawing_ref for _, segment in run}
+    if len(drawing_refs) != 1:
+        raise NoCandidateError("qualifying timeline changes drawing_ref")
     drawing_ref = run[0][1].drawing_ref
+    commands = [segment.command_names[0] for _, segment in run]
+    run_length = len(commands)
+    period = next(
+        (
+            candidate
+            for candidate in range(1, run_length)
+            if run_length % candidate == 0
+            and all(commands[index] == commands[index % candidate] for index in range(run_length))
+        ),
+        None,
+    )
+    if period is None:
+        raise NoCandidateError("qualifying CAD run is not an exact repeated command sequence")
+
     occurrences = [
         {
             "event_id": str(item.source_event_id),
@@ -1493,9 +1524,7 @@ def _derive_occurrences(result: ProcessingResultV2) -> tuple[list[dict[str, Any]
         }
         for item, segment in run
     ]
-    if any(segment.drawing_ref != drawing_ref for _, segment in run):
-        raise NoCandidateError("qualifying CAD run changes drawing")
-    return occurrences, drawing_ref, len(run)
+    return occurrences, drawing_ref, run_length
 
 
 def _normalize_occurrences(value: Any) -> list[dict[str, Any]]:

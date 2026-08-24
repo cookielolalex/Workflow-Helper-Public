@@ -30,20 +30,24 @@ public sealed class SyntheticPilotRunnerTests
                 "drawing_opened",
                 "cad_command",
                 "cad_command",
+                "cad_command",
+                "cad_command",
                 "drawing_saved",
                 "session_ended",
             ],
             writer.Session.CadEvents.Select(value => value.EventType));
         Assert.Equal(
-            [0, 5, 20, 35, 50, 60],
+            [0, 5, 20, 35, 40, 45, 50, 60],
             writer.Session.CadEvents
                 .Select(value => (int)(value.OccurredAt - writer.Session.CadEvents[0].OccurredAt).TotalSeconds));
         Assert.Equal(
-            [null, null, "LINE", "TRIM", null, null],
+            [null, null, "LINE", "TRIM", "LINE", "TRIM", null, null],
             writer.Session.CadEvents.Select(value => value.CommandName));
         Assert.Equal(
             [
                 null,
+                "synthetic-drawing-001",
+                "synthetic-drawing-001",
                 "synthetic-drawing-001",
                 "synthetic-drawing-001",
                 "synthetic-drawing-001",

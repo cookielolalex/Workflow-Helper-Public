@@ -1,4 +1,4 @@
-"""Dormant, pure result-manifest identity for admitted ProcessingJobV2 jobs."""
+"""Active pure result-manifest identity for admitted ProcessingJobV2 jobs."""
 
 from __future__ import annotations
 

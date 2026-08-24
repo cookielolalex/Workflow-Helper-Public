@@ -1,8 +1,8 @@
 {
   "schema_version": "2.0",
   "session_id": "d6d9e5b7-c9bc-4eb1-ae4a-1a14ed5b1350",
-  "event_count": 6,
-  "meaningful_event_count": 6,
+  "event_count": 8,
+  "meaningful_event_count": 8,
   "timeline": [
     {
       "offset_seconds": 0.0,
@@ -27,6 +27,18 @@
       "event_type": "cad_command",
       "summary": "AutoCAD command: TRIM",
       "source_event_id": "7482f72e-0b68-4535-bf65-f234a460e376"
+    },
+    {
+      "offset_seconds": 40.0,
+      "event_type": "cad_command",
+      "summary": "AutoCAD command: LINE",
+      "source_event_id": "4d2d4b2c-7e11-4b5e-9c20-1e5f6a7b8c90"
+    },
+    {
+      "offset_seconds": 45.0,
+      "event_type": "cad_command",
+      "summary": "AutoCAD command: TRIM",
+      "source_event_id": "5e3e5c3d-8f22-4c6f-a031-2f6a7b8c9d01"
     },
     {
       "offset_seconds": 50.0,
@@ -67,10 +79,36 @@
       "source_event_ids": [
         "7482f72e-0b68-4535-bf65-f234a460e376"
       ]
+    },
+    {
+      "sequence": 3,
+      "start_offset_seconds": 40.0,
+      "end_offset_seconds": 40.0,
+      "command_names": [
+        "LINE"
+      ],
+      "drawing_ref": "synthetic-drawing-001",
+      "summary": "AutoCAD command: LINE",
+      "source_event_ids": [
+        "4d2d4b2c-7e11-4b5e-9c20-1e5f6a7b8c90"
+      ]
+    },
+    {
+      "sequence": 4,
+      "start_offset_seconds": 45.0,
+      "end_offset_seconds": 45.0,
+      "command_names": [
+        "TRIM"
+      ],
+      "drawing_ref": "synthetic-drawing-001",
+      "summary": "AutoCAD command: TRIM",
+      "source_event_ids": [
+        "5e3e5c3d-8f22-4c6f-a031-2f6a7b8c9d01"
+      ]
     }
   ],
   "keyframes": [],
   "warnings": [],
   "output_object_key": "sessions/d6d9e5b7-c9bc-4eb1-ae4a-1a14ed5b1350/timeline-v2.json",
-  "idempotency_key": "b4684330d8898f37641b78a38669369a4ed3c80f98fc5ac7d5bb0ce14eac02e6"
+  "idempotency_key": "95f800f086107f9ae862b88f04a167c238cd964aa81f832ad63f23f3a250146d"
 }

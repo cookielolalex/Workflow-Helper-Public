@@ -594,6 +594,53 @@ def test_processing_v2_completion_round_trips_and_cross_version_replay_conflicts
     assert client.get(f"/v1/sessions/{session_id}/timeline").json() == timeline.json()
 
 
+def test_candidate_publication_is_not_registered_on_inert_default_app() -> None:
+    client = TestClient(app)
+    session_id = str(uuid4())
+    payload = {
+        "envelope_version": "1.0",
+        "job": {},
+        "result": {},
+        "result_manifest": {},
+        "timeline_binding": {},
+        "drawing_ref": "synthetic-drawing-001",
+        "occurrences": [],
+        "rejected_alternative_count": 0,
+        "qualifying_run_length": 4,
+        "unexpected": "reject",
+    }
+
+    response = client.post(
+        f"/v1/internal/sessions/{session_id}/candidate-publication",
+        json=payload,
+    )
+
+    assert response.status_code == 404
+
+
+def test_candidate_publication_is_not_registered_without_candidate_bundle() -> None:
+    client = TestClient(app)
+    session_id = str(uuid4())
+    payload = {
+        "envelope_version": "1.0",
+        "job": {},
+        "result": {},
+        "result_manifest": {},
+        "timeline_binding": {},
+        "drawing_ref": "synthetic-drawing-001",
+        "occurrences": [],
+        "rejected_alternative_count": 0,
+        "qualifying_run_length": 4,
+    }
+
+    response = client.post(
+        f"/v1/internal/sessions/{session_id}/candidate-publication",
+        json=payload,
+    )
+
+    assert response.status_code == 404
+
+
 @pytest.mark.parametrize(
     "case",
     [

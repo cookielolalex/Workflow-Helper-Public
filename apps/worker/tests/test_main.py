@@ -198,7 +198,7 @@ def test_sequential_duplicate_reuses_one_timeline_and_completion_key(monkeypatch
     assert len(first.idempotency_key) == 64
 
 
-def test_dormant_v2_replay_is_byte_identical_and_publishes_before_callback(
+def test_v2_replay_is_byte_identical_and_publishes_before_callback(
     monkeypatch,
 ) -> None:
     monkeypatch.setenv("RAW_BUCKET", "raw")
@@ -232,8 +232,92 @@ def test_dormant_v2_replay_is_byte_identical_and_publishes_before_callback(
     assert first.output_object_key == f"sessions/{session_id}/timeline-v2.json"
 
 
+def test_v2_adapter_publishes_periodic_candidate_after_completion(monkeypatch) -> None:
+    monkeypatch.setenv("RAW_BUCKET", "raw")
+    monkeypatch.setenv("PROCESSED_BUCKET", "processed")
+    session_id = UUID("d6d9e5b7-c9bc-4eb1-ae4a-1a14ed5b1350")
+    event_specs = [
+        ("f74d30dd-9945-4291-8ae9-95658379b335", 0, "session_started", "agent"),
+        ("1e6e2db8-c50a-4cd2-b122-381e3f20640f", 5, "drawing_opened", "autocad"),
+        ("9ef08077-1fd0-468c-bf68-1f8f1ef23c4e", 20, "cad_command", "autocad", "LINE"),
+        ("7482f72e-0b68-4535-bf65-f234a460e376", 35, "cad_command", "autocad", "TRIM"),
+        ("4d2d4b2c-7e11-4b5e-9c20-1e5f6a7b8c90", 40, "cad_command", "autocad", "LINE"),
+        ("5e3e5c3d-8f22-4c6f-a031-2f6a7b8c9d01", 45, "cad_command", "autocad", "TRIM"),
+        ("a21f79d6-cb3c-41c4-b5f0-1f0a883fde45", 50, "drawing_saved", "autocad"),
+        ("3cb65614-3f9d-4e19-bac1-133fbdda9a54", 60, "session_ended", "agent"),
+    ]
+    events = []
+    for event_id, offset, event_type, source, *command in event_specs:
+        minutes, seconds = divmod(offset, 60)
+        event = {
+            "event_id": event_id,
+            "occurred_at": f"2026-08-17T00:{minutes:02d}:{seconds:02d}Z",
+            "event_type": event_type,
+            "source": source,
+            "details": {"synthetic": True},
+        }
+        if command:
+            event["command_name"] = command[0]
+            event["drawing_ref"] = "synthetic-drawing-001"
+        elif event_type in {"drawing_opened", "drawing_saved"}:
+            event["drawing_ref"] = "synthetic-drawing-001"
+        events.append(event)
+    package = _package_with_events(session_id, events)
+    package_sha256 = hashlib.sha256(package).hexdigest()
+    body = json.dumps(
+        {
+            "schema_version": "1.0",
+            "session_id": str(session_id),
+            "object_key": f"sessions/{session_id}/packages/{package_sha256}.zip",
+        }
+    )
+    s3 = FakeS3(package)
+    callbacks = []
+
+    def completion_callback(completion):
+        callbacks.append(("completion", completion))
+
+    def candidate_callback(evidence):
+        callbacks.append(("candidate", evidence))
+
+    first = process_message_v2(
+        body,
+        s3=s3,
+        completion_callback=completion_callback,
+        candidate_callback=candidate_callback,
+    )
+    second = process_message_v2(
+        body,
+        s3=s3,
+        completion_callback=completion_callback,
+        candidate_callback=candidate_callback,
+    )
+
+    assert first == second == callbacks[0][1] == callbacks[2][1]
+    assert [kind for kind, _ in callbacks] == [
+        "completion",
+        "candidate",
+        "completion",
+        "candidate",
+    ]
+    first_candidate = callbacks[1][1]
+    assert first_candidate == callbacks[3][1]
+    assert [item["command_name"] for item in first_candidate["occurrences"]] == [
+        "LINE",
+        "TRIM",
+        "LINE",
+        "TRIM",
+    ]
+    assert first_candidate["qualifying_run_length"] == 4
+    assert first_candidate["rejected_alternative_count"] == 0
+    assert first_candidate["timeline_binding"]["store_namespace"] == (
+        "aws-s3://aws/000000000000/ap-northeast-1/processed"
+    )
+    assert first_candidate["timeline_binding"]["artifact_ref"]["provider"] == "s3"
+
+
 @pytest.mark.parametrize("conflict", ["size", "checksum", "metadata", "body"])
-def test_dormant_v2_existing_artifact_conflict_suppresses_callback(
+def test_v2_existing_artifact_conflict_suppresses_callback(
     monkeypatch,
     conflict,
 ) -> None:
@@ -269,7 +353,7 @@ def test_dormant_v2_existing_artifact_conflict_suppresses_callback(
     assert callbacks == []
 
 
-def test_dormant_v2_409_race_accepts_only_exact_winner(monkeypatch) -> None:
+def test_v2_409_race_accepts_only_exact_winner(monkeypatch) -> None:
     monkeypatch.setenv("RAW_BUCKET", "raw")
     monkeypatch.setenv("PROCESSED_BUCKET", "processed")
     session_id = uuid4()
@@ -298,7 +382,7 @@ def test_dormant_v2_409_race_accepts_only_exact_winner(monkeypatch) -> None:
     assert s3.processed_heads == 1
 
 
-def test_dormant_v2_persistent_409_is_bounded_and_suppresses_callback(monkeypatch) -> None:
+def test_v2_persistent_409_is_bounded_and_suppresses_callback(monkeypatch) -> None:
     monkeypatch.setenv("RAW_BUCKET", "raw")
     monkeypatch.setenv("PROCESSED_BUCKET", "processed")
     session_id = uuid4()
@@ -326,7 +410,7 @@ def test_dormant_v2_persistent_409_is_bounded_and_suppresses_callback(monkeypatc
     assert callbacks == []
 
 
-def test_dormant_v2_model_failure_precedes_publication_and_callback(monkeypatch) -> None:
+def test_v2_model_failure_precedes_publication_and_callback(monkeypatch) -> None:
     monkeypatch.setenv("RAW_BUCKET", "raw")
     monkeypatch.setenv("PROCESSED_BUCKET", "processed")
     session_id = uuid4()
@@ -799,6 +883,63 @@ def test_completion_callback_retries_and_sends_worker_token(monkeypatch) -> None
     assert sleeps == [0.25, 0.5]
     assert requests[-1].get_header("X-workflow-worker-token") == "synthetic-worker-token"
     assert requests[-1].get_header("Idempotency-key") == completion.idempotency_key
+
+
+def test_candidate_callback_retries_and_sends_worker_token(monkeypatch) -> None:
+    session_id = uuid4()
+    evidence = {
+        "envelope_version": "1.0",
+        "job": {"session_id": str(session_id)},
+        "result": {},
+        "result_manifest": {},
+        "timeline_binding": {},
+        "drawing_ref": "synthetic-drawing-001",
+        "occurrences": [],
+        "rejected_alternative_count": 0,
+        "qualifying_run_length": 0,
+    }
+    requests = []
+    sleeps = []
+
+    class Response:
+        status = 201
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc_value, traceback):
+            return False
+
+    def fake_urlopen(request, timeout):
+        requests.append(request)
+        if len(requests) < 3:
+            raise URLError("synthetic API startup race")
+        return Response()
+
+    monkeypatch.setenv("ENVIRONMENT", "production")
+    monkeypatch.setenv("WORKFLOW_WORKER_TOKEN", "synthetic-worker-token")
+    monkeypatch.setenv("WORKER_CALLBACK_MAX_ATTEMPTS", "3")
+    monkeypatch.setenv("WORKER_RETRY_BASE_SECONDS", "0.25")
+    monkeypatch.setattr(worker_main, "urlopen", fake_urlopen)
+
+    worker_main.post_candidate(evidence, sleep=sleeps.append)
+
+    assert len(requests) == 3
+    assert sleeps == [0.25, 0.5]
+    assert requests[-1].full_url.endswith(
+        f"/v1/internal/sessions/{session_id}/candidate-publication"
+    )
+    assert requests[-1].get_header("X-workflow-worker-token") == "synthetic-worker-token"
+    expected_body = json.dumps(
+        evidence,
+        allow_nan=False,
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("utf-8")
+    assert requests[-1].get_header("Idempotency-key") == hashlib.sha256(
+        expected_body
+    ).hexdigest()
 
 
 def test_package_download_rejects_oversized_head_before_get(monkeypatch) -> None:
