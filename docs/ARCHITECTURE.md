@@ -58,20 +58,25 @@ Changed identifiers, revisions, hashes, sizes, or permissions must fail closed.
 
 ## Implemented code boundaries
 
-The current default API is deliberately inert. The module-global application is
-`create_app()` with no `SealedSyntheticRuntimeBundle`. Starting it directly or
-through Compose performs no environment, path, database, provider, SDK, or
-credential discovery. It has zero allowed CORS origins, serves only
-`GET /health` as usable (`environment=unconfigured`), returns `404` for
-`/docs`, `/redoc`, and `/openapi.json`, and returns bounded `503` responses from
-all 28 protected operations.
+The default API image remains deliberately inert. The module-global application
+is `create_app()` with no `SealedSyntheticRuntimeBundle`; its image command is
+still `workflow_api.main:app` and performs no environment, path, database,
+provider, SDK, or credential discovery. It has zero allowed CORS origins,
+serves only `GET /health` as usable (`environment=unconfigured`), returns `404`
+for `/docs`, `/redoc`, and `/openapi.json`, and returns bounded `503`
+responses from all protected operations.
 
-Compose is therefore not an end-to-end implementation of the intended diagram.
-It starts PostgreSQL and waits for its health check, but no API or worker code
-opens that database. The named PostgreSQL volume is unused application state.
-Compose also starts LocalStack, the worker, and the web app, but default API
-session registration, artifact upload completion, processing callbacks, and
-readback remain unavailable.
+Compose remains a compatibility topology, not an end-to-end implementation of
+the intended diagram. Its `api` service has an explicit command override to
+`workflow_api.dev_server`, but only when the caller supplies an explicit
+dev-like environment, a fresh absolute data directory, and fresh synthetic
+proof/session material. That entrypoint constructs the sealed
+`create_in_process_no_network_bundle()` graph, binds `create_app(bundle)`, and
+uses six component-local SQLite stores plus the no-network artifact oracle.
+The default image command remains inert. Compose still starts PostgreSQL and
+LocalStack, but no dev API or worker code opens PostgreSQL and the synthetic
+dev API does not claim a worker queue, candidate producer, or web readback
+slice. The named PostgreSQL volume is unused application state.
 
 The repository contains an `InMemorySessionRepository`, but no runtime
 dependency installs it. It also contains durable SQLite reference components,
@@ -83,9 +88,12 @@ ADR 0012 defines a sealed, no-network synthetic bundle that binds exact
 preconstructed SQLite and service objects. Only a separately created
 `create_app(bundle)` installs that graph. The bundle uses an in-process metadata
 oracle, accepts no payload bytes, opens no provider connection, and never
-mutates the module-global app. No shipped development command currently builds
-this bundle or supplies the browser/workload authentication evidence needed by
-the Windows compatibility harness.
+mutates the module-global app. `workflow_api.dev_server` is the explicit
+synthetic development command: its outer guard rejects non-dev environments,
+ambient Google/AWS provider sources, missing or malformed proof inputs, and
+non-fresh data paths before constructing the bundle. Fixed synthetic principals,
+scopes, policies, and authenticator/workload factories are created only inside
+that guarded factory; raw proof material is not persisted.
 
 The web app calls the session plane but catches non-success responses and
 network failures. Its dashboard renders an empty session list; its detail route
