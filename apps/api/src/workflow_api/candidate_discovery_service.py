@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 import sqlite3
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID
 
@@ -66,6 +67,17 @@ class CandidateReviewQueueRecord:
     provenance: str
     review_status: str
     finalized_at_us: int
+
+
+@dataclass(frozen=True, slots=True)
+class CandidateReviewOutcomeRecord:
+    """Display-only terminal result with no review or publication binding."""
+
+    command_sequence: tuple[str, ...]
+    occurrence_count: int
+    provenance: str
+    review_status: str
+    decided_at_us: int
 
 
 class CandidateDiscoveryService:
@@ -246,12 +258,127 @@ class CandidateDiscoveryService:
                 break
         return projected
 
+    def list_review_outcomes(
+        self,
+        principal: AuthenticatedPrincipal,
+        *,
+        correlation_id: str,
+    ) -> list[CandidateReviewOutcomeRecord]:
+        """Return terminal decisions only after evidence and authority correlation."""
+
+        scope = self._authorize_read(principal, correlation_id)
+        projected: list[CandidateReviewOutcomeRecord] = []
+        scan_cursor: CandidatePublicationCursor | None = None
+        while len(projected) < MAX_DISCOVERY_LIMIT:
+            rows = self._read_all_finalized_page(scope, scan_cursor)
+            if not rows:
+                break
+            progressed = False
+            for metadata in rows:
+                row_cursor = _metadata_cursor(metadata)
+                if row_cursor is None:
+                    continue
+                if scan_cursor is not None and _cursor_key(row_cursor) <= _cursor_key(scan_cursor):
+                    continue
+                scan_cursor = row_cursor
+                progressed = True
+                if type(metadata) is not CandidatePublicationMetadata:
+                    continue
+                projection = self._review_projection(metadata, principal, correlation_id)
+                if projection is None or projection.status not in {
+                    "approved",
+                    "rejected",
+                    "needs_changes",
+                }:
+                    continue
+                try:
+                    record = self._publication_store.get_finalized(
+                        metadata.scope,
+                        metadata.publication_key,
+                    )
+                except CandidatePublicationError:
+                    continue
+                except (OSError, RuntimeError, sqlite3.Error) as exc:
+                    raise CandidateDiscoveryUnavailableError(
+                        "candidate discovery publication authority is unavailable"
+                    ) from exc
+                if type(record) is not CandidatePublicationRecord:
+                    continue
+                try:
+                    if record.without_bytes() != metadata:
+                        continue
+                    commands = _verified_display_evidence(record)
+                    decided_at_us = _projection_micros(projection)
+                except (AttributeError, TypeError, ValueError, json.JSONDecodeError):
+                    continue
+                if self._review_projection(
+                    record.without_bytes(),
+                    principal,
+                    correlation_id,
+                ) != projection:
+                    continue
+                projected.append(
+                    CandidateReviewOutcomeRecord(
+                        command_sequence=commands,
+                        occurrence_count=len(commands),
+                        provenance="observed",
+                        review_status=projection.status,
+                        decided_at_us=decided_at_us,
+                    )
+                )
+                if len(projected) == MAX_DISCOVERY_LIMIT:
+                    break
+            if not progressed or len(rows) < MAX_DISCOVERY_LIMIT:
+                break
+        return projected
+
+    def _read_all_finalized_page(
+        self,
+        scope: TenantWorkspaceScope,
+        cursor: CandidatePublicationCursor | None,
+    ) -> list[CandidatePublicationMetadata]:
+        self._verify_authority()
+        try:
+            rows = self._publication_store.list_finalized(
+                scope,
+                limit=MAX_DISCOVERY_LIMIT,
+                cursor=cursor,
+            )
+        except CandidatePublicationError:
+            raise CandidateDiscoveryUnavailableError(
+                "candidate discovery publication authority is unavailable"
+            ) from None
+        except (OSError, RuntimeError, sqlite3.Error) as exc:
+            raise CandidateDiscoveryUnavailableError(
+                "candidate discovery publication authority is unavailable"
+            ) from exc
+        if type(rows) is not list or len(rows) > MAX_DISCOVERY_LIMIT:
+            raise CandidateDiscoveryUnavailableError(
+                "candidate discovery publication authority is unavailable"
+            )
+        return rows
+
     def _effective_review_status(
         self,
         metadata: CandidatePublicationMetadata,
         principal: AuthenticatedPrincipal,
         correlation_id: str,
     ) -> str | None:
+        projection = self._review_projection(metadata, principal, correlation_id)
+        if projection is None:
+            return "unreviewed"
+        if projection.status == "pending":
+            return "pending"
+        if projection.status in {"approved", "rejected", "needs_changes"}:
+            return None
+        return None
+
+    def _review_projection(
+        self,
+        metadata: CandidatePublicationMetadata,
+        principal: AuthenticatedPrincipal,
+        correlation_id: str,
+    ) -> ReviewProjection | None:
         try:
             self._verify_authority()
             projection = self._control_service.read_candidate_review(
@@ -261,12 +388,16 @@ class CandidateDiscoveryService:
             )
         except CandidateDiscoveryUnavailableError:
             raise
-        except (AuthorizationDeniedError, ControlStoreError, OSError, RuntimeError, sqlite3.Error):
-            return None
+        except AuthorizationDeniedError:
+            raise
+        except (ControlStoreError, OSError, RuntimeError, sqlite3.Error) as exc:
+            raise CandidateDiscoveryUnavailableError(
+                "candidate discovery control authority is unavailable"
+            ) from exc
         except (TypeError, ValueError, KeyError):
             return None
         if projection is None:
-            return "unreviewed"
+            return None
         if (
             type(projection) is not ReviewProjection
             or projection.target_id != metadata.review_target_id
@@ -274,13 +405,11 @@ class CandidateDiscoveryService:
             or projection.version < 1
             or type(projection.last_event_id) is not str
             or not projection.last_event_id
+            or type(projection.occurred_at) is not datetime
+            or projection.occurred_at.tzinfo is not UTC
         ):
             return None
-        if projection.status == "pending":
-            return "pending"
-        if projection.status in {"approved", "rejected", "needs_changes"}:
-            return None
-        return None
+        return projection
 
     def _authorize_read(
         self,
@@ -404,9 +533,23 @@ def _review_queue_record(
     record: CandidatePublicationRecord,
     review_status: str,
 ) -> CandidateReviewQueueRecord:
+    if review_status not in {"unreviewed", "pending"}:
+        raise ValueError("candidate publication is not displayable")
+    commands = _verified_display_evidence(record)
+    return CandidateReviewQueueRecord(
+        publication_key=record.publication_key,
+        review_target_id=record.review_target_id,
+        command_sequence=commands,
+        occurrence_count=len(commands),
+        provenance="observed",
+        review_status=review_status,
+        finalized_at_us=record.finalized_at_us,
+    )
+
+
+def _verified_display_evidence(record: CandidatePublicationRecord) -> tuple[str, ...]:
     if (
-        review_status not in {"unreviewed", "pending"}
-        or record.state != "finalized"
+        record.state != "finalized"
         or type(record.finalized_at_us) is not int
         or record.finalized_at_us <= 0
         or type(record.derivation_evidence_jcs) is not bytes
@@ -486,15 +629,18 @@ def _review_queue_record(
         ):
             raise ValueError("candidate action evidence is inconsistent")
 
-    return CandidateReviewQueueRecord(
-        publication_key=record.publication_key,
-        review_target_id=record.review_target_id,
-        command_sequence=tuple(commands),
-        occurrence_count=len(commands),
-        provenance="observed",
-        review_status=review_status,
-        finalized_at_us=record.finalized_at_us,
-    )
+    return tuple(commands)
+
+
+def _projection_micros(projection: ReviewProjection) -> int:
+    if type(projection.occurred_at) is not datetime or projection.occurred_at.tzinfo is not UTC:
+        raise ValueError("candidate decision time is invalid")
+    epoch = datetime(1970, 1, 1, tzinfo=UTC)
+    delta = projection.occurred_at - epoch
+    value = delta.days * 86_400_000_000 + delta.seconds * 1_000_000 + delta.microseconds
+    if value <= 0:
+        raise ValueError("candidate decision time is invalid")
+    return value
 
 
 _validate_control_schema = validate_control_schema
@@ -506,5 +652,6 @@ __all__ = [
     "CandidateDiscoveryService",
     "CandidateDiscoveryUnavailableError",
     "CandidateDiscoveryValidationError",
+    "CandidateReviewOutcomeRecord",
     "CandidateReviewQueueRecord",
 ]

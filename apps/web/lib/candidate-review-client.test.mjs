@@ -3,10 +3,13 @@ import test from "node:test";
 
 import {
   CANDIDATE_REVIEW_QUEUE_PATH,
+  CANDIDATE_REVIEW_OUTCOMES_PATH,
   MAX_CANDIDATE_REVIEW_CORRELATION_ID_LENGTH,
   MAX_CANDIDATE_REVIEW_CURSOR_LENGTH,
   buildCandidateReviewRequest,
   readCandidateReview,
+  buildCandidateReviewOutcomesRequest,
+  readCandidateReviewOutcomes,
 } from "./candidate-review-client.ts";
 
 const PUBLICATION_KEY =
@@ -68,6 +71,39 @@ test("descriptor uses only the fixed review-queue route", () => {
       cursor: "opaque-server-cursor",
     },
   );
+});
+
+test("terminal outcomes use one fixed descriptor and redact strict display evidence", () => {
+  assert.deepEqual(buildCandidateReviewOutcomesRequest(), {
+    path: CANDIDATE_REVIEW_OUTCOMES_PATH,
+    method: "GET",
+  });
+  const view = readCandidateReviewOutcomes((request) => {
+    assert.deepEqual(request, buildCandidateReviewOutcomesRequest());
+    return response(200, {
+      items: [{
+        command_sequence: ["LINE", "TRIM", "LINE", "TRIM"],
+        occurrence_count: 4,
+        provenance: "observed",
+        review_status: "needs_changes",
+        decided_at_us: 2_000_000,
+      }],
+      count: 1,
+    });
+  });
+  assert.deepEqual(view, {
+    status: "populated",
+    rows: [{
+      ordinal: 1,
+      command_sequence: ["LINE", "TRIM", "LINE", "TRIM"],
+      occurrence_count: 4,
+      provenance: "observed",
+      review_status: "needs_changes",
+      decided_at: "1970-01-01T00:00:02.000Z",
+    }],
+  });
+  assert.equal(JSON.stringify(view).includes(PUBLICATION_KEY), false);
+  assert.equal(JSON.stringify(view).includes(REVIEW_TARGET), false);
 });
 
 test("invalid request bounds do not invoke transport", () => {

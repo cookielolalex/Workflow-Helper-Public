@@ -5,6 +5,7 @@ import test from "node:test";
 import {
   candidateReviewRedirect,
   getSyntheticSessionRoute,
+  loadCandidateReviewOutcomes,
   loadCandidateReviewQueue,
   parseCandidateReviewActionRequest,
   submitCandidateReviewAction,
@@ -175,6 +176,38 @@ test("loads one redacted row through the existing synchronous GET validator", as
   assert.equal(JSON.stringify(view).includes(PUBLICATION_KEY), false);
   assert.equal(JSON.stringify(view).includes(REVIEW_TARGET), false);
   assert.equal(JSON.stringify(view).includes(REVIEWER_PROOF), false);
+});
+
+test("loads terminal outcomes through only the fixed authenticated server route", async () => {
+  configure();
+  const calls = [];
+  const fetcher = async (url, init) => {
+    calls.push({ url, init });
+    return jsonResponse(200, {
+      items: [{
+        command_sequence: ["LINE", "TRIM", "LINE", "TRIM"],
+        occurrence_count: 4,
+        provenance: "observed",
+        review_status: "needs_changes",
+        decided_at_us: 2_000_000,
+      }],
+      count: 1,
+    });
+  };
+  const view = await loadCandidateReviewOutcomes(fetcher);
+  assert.equal(view.status, "populated");
+  assert.equal(calls.length, 1);
+  assert.equal(
+    calls[0].url,
+    "http://api:8000/v1/control/candidate-publications/review-outcomes",
+  );
+  assert.equal(calls[0].init.method, "GET");
+  assert.equal(calls[0].init.headers.get("cookie"), `workflow_session=${REVIEWER_SESSION}`);
+  assert.equal(calls[0].init.headers.get("x-workflow-dev-reviewer-proof"), REVIEWER_PROOF);
+  const serialized = JSON.stringify(view);
+  assert.equal(serialized.includes(PUBLICATION_KEY), false);
+  assert.equal(serialized.includes(REVIEW_TARGET), false);
+  assert.equal(serialized.includes(REVIEWER_PROOF), false);
 });
 
 test("each legal effective-state action re-fetches and posts exactly once", async () => {
