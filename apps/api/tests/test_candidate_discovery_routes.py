@@ -691,6 +691,7 @@ def test_review_outcomes_route_is_static_exact_identifier_free_and_bounded(
         occurrence_count=4,
         provenance="observed",
         review_status="needs_changes",
+        reason_code="evidence",
         decided_at_us=2_000_000,
     )
     calls: list[tuple[AuthenticatedPrincipal, str]] = []
@@ -717,6 +718,7 @@ def test_review_outcomes_route_is_static_exact_identifier_free_and_bounded(
                 "occurrence_count": 4,
                 "provenance": "observed",
                 "review_status": "needs_changes",
+                "reason_code": "evidence",
                 "decided_at_us": 2_000_000,
             }
         ],
@@ -746,6 +748,38 @@ def test_review_outcomes_invalid_service_result_fails_closed(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(service, "list_review_outcomes", lambda *_args, **_kwargs: [object()])
+    response = TestClient(isolated_app).get(
+        "/v1/control/candidate-publications/review-outcomes"
+    )
+    assert response.status_code == 503
+    assert response.json() == {"detail": "candidate discovery unavailable"}
+
+
+@pytest.mark.parametrize(
+    ("status_value", "reason_code"),
+    [
+        ("approved", "sequence"),
+        ("rejected", None),
+        ("needs_changes", None),
+        ("rejected", "unknown"),
+    ],
+)
+def test_review_outcomes_incoherent_reason_code_fails_closed(
+    isolated_app: FastAPI,
+    service: CandidateDiscoveryService,
+    monkeypatch: pytest.MonkeyPatch,
+    status_value: str,
+    reason_code: str | None,
+) -> None:
+    row = CandidateReviewOutcomeRecord(
+        command_sequence=("LINE", "TRIM"),
+        occurrence_count=2,
+        provenance="observed",
+        review_status=status_value,
+        reason_code=reason_code,
+        decided_at_us=2_000_000,
+    )
+    monkeypatch.setattr(service, "list_review_outcomes", lambda *_args, **_kwargs: [row])
     response = TestClient(isolated_app).get(
         "/v1/control/candidate-publications/review-outcomes"
     )

@@ -250,13 +250,27 @@ def _transition(
     status: str,
     *,
     suffix: str,
+    reason_code: str = "sequence",
 ) -> None:
+    review_detail: dict[str, object] = {}
+    if status == "approved":
+        review_detail = {"reason": None, "evidence": None}
+    elif status in {"rejected", "needs_changes"}:
+        reason = {
+            "sequence": "Synthetic command sequence requires correction.",
+            "evidence": "Synthetic observed evidence is insufficient.",
+        }[reason_code]
+        review_detail = {
+            "reason": reason,
+            "evidence": {"reason_code": reason_code},
+        }
     control_service.append_candidate_review(
         _reviewer(),
         publication=metadata,
         status=status,
         idempotency_key=f"review-{suffix}-{metadata.publication_key}",
         correlation_id=f"corr-review-{suffix}",
+        **review_detail,
     )
 
 
@@ -450,16 +464,30 @@ def test_review_queue_global_authority_and_page_failures_remain_fatal(
         service.list_review_queue(_reviewer(), correlation_id=CORRELATION)
 
 
-@pytest.mark.parametrize("status", ["approved", "rejected", "needs_changes"])
+@pytest.mark.parametrize(
+    ("status", "reason_code"),
+    [
+        ("approved", None),
+        ("rejected", "sequence"),
+        ("needs_changes", "evidence"),
+    ],
+)
 def test_review_outcomes_return_only_verified_terminal_display_evidence(
     tmp_path: Path,
     status: str,
+    reason_code: str | None,
 ) -> None:
     publication_store, _control_store, control_service, service = _setup(tmp_path)
     metadata = _publish(publication_store, "1", now=1_000_000)
     if status in {"rejected", "needs_changes"}:
         _transition(control_service, metadata, "pending", suffix=f"pending-{status}")
-    _transition(control_service, metadata, status, suffix=status)
+    _transition(
+        control_service,
+        metadata,
+        status,
+        suffix=status,
+        reason_code=reason_code or "sequence",
+    )
 
     rows = service.list_review_outcomes(_reviewer(), correlation_id=CORRELATION)
 
@@ -469,6 +497,7 @@ def test_review_outcomes_return_only_verified_terminal_display_evidence(
             occurrence_count=2,
             provenance="observed",
             review_status=status,
+            reason_code=reason_code,
             decided_at_us=rows[0].decided_at_us,
         )
     ]
@@ -478,8 +507,62 @@ def test_review_outcomes_return_only_verified_terminal_display_evidence(
         "occurrence_count",
         "provenance",
         "review_status",
+        "reason_code",
         "decided_at_us",
     }
+
+
+def test_review_outcomes_suppress_noncanonical_persisted_reason_pairs(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    publication_store, _control_store, control_service, service = _setup(tmp_path)
+    metadata = _publish(publication_store, "1", now=1_000_000)
+    _transition(control_service, metadata, "pending", suffix="reason-pending")
+    _transition(
+        control_service,
+        metadata,
+        "needs_changes",
+        suffix="reason-terminal",
+        reason_code="evidence",
+    )
+    projection = control_service.read_candidate_review(
+        _reviewer(),
+        review_target_id=metadata.review_target_id,
+        correlation_id=CORRELATION,
+    )
+    assert projection is not None
+    canonical_detail = projection.detail
+    invalid_details = [
+        {key: value for key, value in canonical_detail.items() if key != "reason"},
+        {**canonical_detail, "reason": "legacy arbitrary reason"},
+        {
+            **canonical_detail,
+            "reason": "Synthetic command sequence requires correction.",
+            "evidence": {"reason_code": "evidence"},
+        },
+        {**canonical_detail, "evidence": {"reason_code": "unknown"}},
+        {**canonical_detail, "evidence": {"reason_code": "evidence", "extra": True}},
+        {**canonical_detail, "evidence": "evidence"},
+    ]
+    for detail in invalid_details:
+        monkeypatch.setattr(
+            service,
+            "_review_projection",
+            lambda *_args, _detail=detail, **_kwargs: replace(
+                projection,
+                detail=_detail,
+            ),
+        )
+        assert service.list_review_outcomes(_reviewer(), correlation_id=CORRELATION) == []
+
+    approved = replace(projection, status="approved")
+    monkeypatch.setattr(
+        service,
+        "_review_projection",
+        lambda *_args, **_kwargs: approved,
+    )
+    assert service.list_review_outcomes(_reviewer(), correlation_id=CORRELATION) == []
 
 
 def test_review_outcomes_suppress_active_corrupt_and_post_correlation_race(
@@ -491,7 +574,13 @@ def test_review_outcomes_suppress_active_corrupt_and_post_correlation_race(
     assert service.list_review_outcomes(_reviewer(), correlation_id=CORRELATION) == []
     _transition(control_service, metadata, "pending", suffix="pending")
     assert service.list_review_outcomes(_reviewer(), correlation_id=CORRELATION) == []
-    _transition(control_service, metadata, "needs_changes", suffix="terminal")
+    _transition(
+        control_service,
+        metadata,
+        "needs_changes",
+        suffix="terminal",
+        reason_code="evidence",
+    )
     record = publication_store.get_finalized(SCOPE, metadata.publication_key)
 
     monkeypatch.setattr(
@@ -509,7 +598,10 @@ def test_review_outcomes_suppress_active_corrupt_and_post_correlation_race(
         nonlocal reads
         reads += 1
         projection = original(*args, **kwargs)
-        return projection if reads == 1 else replace(projection, version=projection.version + 1)
+        return projection if reads == 1 else replace(
+            projection,
+            detail={**projection.detail, "reason": "legacy raced reason"},
+        )
 
     monkeypatch.setattr(service, "_review_projection", raced_projection)
     assert service.list_review_outcomes(_reviewer(), correlation_id=CORRELATION) == []

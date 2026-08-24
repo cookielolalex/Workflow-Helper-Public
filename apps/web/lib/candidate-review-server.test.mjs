@@ -61,6 +61,12 @@ function outcome(reviewStatus = "approved", overrides = {}) {
     occurrence_count: 4,
     provenance: "observed",
     review_status: reviewStatus,
+    reason_code:
+      reviewStatus === "approved"
+        ? null
+        : reviewStatus === "needs_changes"
+          ? "evidence"
+          : "sequence",
     decided_at_us: 2_000_000,
     ...overrides,
   };
@@ -202,6 +208,7 @@ test("loads terminal outcomes through only the fixed authenticated server route"
         occurrence_count: 4,
         provenance: "observed",
         review_status: "needs_changes",
+        reason_code: "evidence",
         decided_at_us: 2_000_000,
       }],
       count: 1,
@@ -769,6 +776,10 @@ test("live review page exposes actions only for their effective state", () => {
   assert.match(source, /name="action" value="reject"/);
   assert.match(source, /name="action" value="needs_changes"/);
   assert.match(source, /name="reason_code"/);
+  assert.match(source, /Sequence mismatch/);
+  assert.match(source, /Insufficient evidence/);
+  assert.match(source, /No reason code/);
+  assert.doesNotMatch(source, /\{row\.reason_code\}/);
   assert.doesNotMatch(source, /textarea|type="text"/);
   assert.match(source, /row\.review_status === "unreviewed"/);
 });

@@ -42,6 +42,8 @@ MAX_DISCOVERY_LIMIT = 100
 _DISCOVERY_TARGET = "candidate-publication-discovery"
 _MAX_COMMAND_LENGTH = 128
 _MAX_STORED_JSON_BYTES = 262_144
+_SEQUENCE_REASON = "Synthetic command sequence requires correction."
+_EVIDENCE_REASON = "Synthetic observed evidence is insufficient."
 
 
 class CandidateDiscoveryError(RuntimeError):
@@ -67,6 +69,13 @@ class _InvalidReviewProjection:
 _INVALID_REVIEW_PROJECTION = _InvalidReviewProjection()
 
 
+class _InvalidOutcomeReason:
+    """Distinguish an invalid persisted reason pair from an approved null pair."""
+
+
+_INVALID_OUTCOME_REASON = _InvalidOutcomeReason()
+
+
 @dataclass(frozen=True, slots=True)
 class CandidateReviewQueueRecord:
     """Server-only review binding plus the minimum informed display evidence."""
@@ -88,6 +97,7 @@ class CandidateReviewOutcomeRecord:
     occurrence_count: int
     provenance: str
     review_status: str
+    reason_code: str | None
     decided_at_us: int
 
 
@@ -309,6 +319,9 @@ class CandidateDiscoveryService:
                     "needs_changes",
                 }:
                     continue
+                reason_code = _terminal_reason_code(projection)
+                if type(reason_code) is _InvalidOutcomeReason:
+                    continue
                 try:
                     record = self._publication_store.get_finalized(
                         metadata.scope,
@@ -329,11 +342,21 @@ class CandidateDiscoveryService:
                     decided_at_us = _projection_micros(projection)
                 except (AttributeError, TypeError, ValueError, json.JSONDecodeError):
                     continue
-                if self._review_projection(
+                confirmed_projection = self._review_projection(
                     record.without_bytes(),
                     principal,
                     correlation_id,
-                ) != projection:
+                )
+                confirmed_reason_code = (
+                    _terminal_reason_code(confirmed_projection)
+                    if type(confirmed_projection) is ReviewProjection
+                    else _INVALID_OUTCOME_REASON
+                )
+                if (
+                    confirmed_projection != projection
+                    or type(confirmed_reason_code) is _InvalidOutcomeReason
+                    or confirmed_reason_code != reason_code
+                ):
                     continue
                 projected.append(
                     CandidateReviewOutcomeRecord(
@@ -341,6 +364,7 @@ class CandidateDiscoveryService:
                         occurrence_count=len(commands),
                         provenance="observed",
                         review_status=projection.status,
+                        reason_code=reason_code,
                         decided_at_us=decided_at_us,
                     )
                 )
@@ -661,6 +685,38 @@ def _projection_micros(projection: ReviewProjection) -> int:
     if value <= 0:
         raise ValueError("candidate decision time is invalid")
     return value
+
+
+def _terminal_reason_code(
+    projection: ReviewProjection,
+) -> str | None | _InvalidOutcomeReason:
+    detail = projection.detail
+    if (
+        type(detail) is not dict
+        or "reason" not in detail
+        or "evidence" not in detail
+    ):
+        return _INVALID_OUTCOME_REASON
+    reason = detail["reason"]
+    evidence = detail["evidence"]
+    if projection.status == "approved":
+        return None if reason is None and evidence is None else _INVALID_OUTCOME_REASON
+    if projection.status not in {"rejected", "needs_changes"}:
+        return _INVALID_OUTCOME_REASON
+    if (
+        type(evidence) is not dict
+        or set(evidence) != {"reason_code"}
+        or type(evidence["reason_code"]) is not str
+    ):
+        return _INVALID_OUTCOME_REASON
+    reason_code = evidence["reason_code"]
+    expected_reason = {
+        "sequence": _SEQUENCE_REASON,
+        "evidence": _EVIDENCE_REASON,
+    }.get(reason_code)
+    if expected_reason is None or reason != expected_reason:
+        return _INVALID_OUTCOME_REASON
+    return reason_code
 
 
 _validate_control_schema = validate_control_schema

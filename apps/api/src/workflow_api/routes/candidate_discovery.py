@@ -167,6 +167,7 @@ class CandidateReviewOutcomeItem(StrictModel):
     occurrence_count: Annotated[int, Field(ge=2, le=64)]
     provenance: Literal["observed"]
     review_status: Literal["approved", "rejected", "needs_changes"]
+    reason_code: Literal["sequence", "evidence"] | None
     decided_at_us: Annotated[int, Field(gt=0)]
 
     @classmethod
@@ -176,11 +177,20 @@ class CandidateReviewOutcomeItem(StrictModel):
                 "candidate review outcomes returned invalid evidence"
             )
         try:
+            if (
+                (value.review_status == "approved" and value.reason_code is not None)
+                or (
+                    value.review_status in {"rejected", "needs_changes"}
+                    and value.reason_code not in {"sequence", "evidence"}
+                )
+            ):
+                raise ValueError("candidate review outcome reason code is invalid")
             return cls(
                 command_sequence=value.command_sequence,
                 occurrence_count=value.occurrence_count,
                 provenance=value.provenance,
                 review_status=value.review_status,
+                reason_code=value.reason_code,
                 decided_at_us=value.decided_at_us,
             )
         except (AttributeError, TypeError, ValueError, ValidationError) as exc:

@@ -88,6 +88,7 @@ test("terminal outcome projection is exact, bounded, and identifier free", () =>
       occurrence_count: 4,
       provenance: "observed",
       review_status: "needs_changes",
+      reason_code: "evidence",
       decided_at_us: 2_000_000,
     }],
     count: 1,
@@ -100,12 +101,23 @@ test("terminal outcome projection is exact, bounded, and identifier free", () =>
     occurrence_count: 4,
     provenance: "observed",
     review_status: "needs_changes",
+    reason_code: "evidence",
     decided_at: "1970-01-01T00:00:02.000Z",
   });
   for (const malformed of [
     { ...response, extra: true },
     { items: [{ ...response.items[0], publication_key: PUBLICATION_KEY }], count: 1 },
     { items: [{ ...response.items[0], review_status: "pending" }], count: 1 },
+    { items: [{ ...response.items[0], reason_code: null }], count: 1 },
+    { items: [{ ...response.items[0], reason_code: "unknown" }], count: 1 },
+    {
+      items: [{ ...response.items[0], review_status: "approved", reason_code: "evidence" }],
+      count: 1,
+    },
+    {
+      items: [{ ...response.items[0], review_status: "approved", reason_code: null, extra: true }],
+      count: 1,
+    },
     { items: [{ ...response.items[0], occurrence_count: 3 }], count: 1 },
     { items: [{ ...response.items[0], decided_at_us: "2" }], count: 1 },
   ]) {
