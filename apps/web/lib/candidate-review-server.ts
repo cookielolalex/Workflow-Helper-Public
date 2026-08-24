@@ -30,7 +30,7 @@ const FORBIDDEN_PROOF_VALUES = new Set([
 ]);
 
 type CachedResponse = Readonly<{ status: number; body: unknown }>;
-type ReviewAction = "approve" | "reject";
+type ReviewAction = "approve";
 type ParsedAction = Readonly<{ ordinal: number; action: ReviewAction }>;
 type ServerConfig = Readonly<{
   apiBase: string;
@@ -298,16 +298,16 @@ export async function submitCandidateReviewAction(
   action: ReviewAction,
   fetcher: typeof fetch = fetch,
 ): Promise<CandidateReviewActionResult> {
-  const config = serverConfig();
   if (
-    config === null ||
+    action !== "approve" ||
     !Number.isSafeInteger(ordinal) ||
     ordinal < 1 ||
-    ordinal > 100 ||
-    !["approve", "reject"].includes(action)
+    ordinal > 100
   ) {
     return "unavailable";
   }
+  const config = serverConfig();
+  if (config === null) return "unavailable";
   const listed = await cachedList(config, "web-candidate-action", fetcher);
   if (listed === null || listed.view.status !== "populated") return "unavailable";
   const item = rawItem(listed.cached.body, ordinal);
@@ -317,7 +317,7 @@ export async function submitCandidateReviewAction(
   if (typeof publicationKey !== "string" || typeof reviewTarget !== "string") {
     return "unavailable";
   }
-  const status = action === "approve" ? "approved" : "rejected";
+  const status = "approved";
   const identity = createHash("sha256")
     .update(`workflow-helper\0dev-review\0${publicationKey}\0${status}`)
     .digest("hex");
@@ -411,7 +411,7 @@ export async function parseCandidateReviewActionRequest(
   if (body === null || body.includes("candidate-publication") || body.includes("candidate-skill")) {
     return null;
   }
-  const match = /^ordinal=((?:[1-9][0-9]?|100))&action=(approve|reject)$/.exec(body);
+  const match = /^ordinal=((?:[1-9][0-9]?|100))&action=(approve)$/.exec(body);
   if (match === null) return null;
   const ordinal = Number(match[1]);
   if (ordinal > 100) return null;

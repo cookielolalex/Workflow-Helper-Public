@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import test from "node:test";
 
 import {
@@ -204,6 +205,25 @@ test("re-fetches and binds the ordinal server-side before validated POST", async
   assert.equal(JSON.stringify(result).includes(PUBLICATION_KEY), false);
 });
 
+test("reject and needs_changes submissions fail before any fetch", async () => {
+  configure();
+  let calls = 0;
+  const fetcher = async () => {
+    calls += 1;
+    throw new Error("invalid action reached fetch");
+  };
+
+  assert.equal(
+    await submitCandidateReviewAction(1, "reject", fetcher),
+    "unavailable",
+  );
+  assert.equal(
+    await submitCandidateReviewAction(1, "needs_changes", fetcher),
+    "unavailable",
+  );
+  assert.equal(calls, 0);
+});
+
 test("malformed cached GET or POST responses fail closed without leaking details", async () => {
   configure();
   let calls = 0;
@@ -290,8 +310,8 @@ test("accepts only the exact same-origin two-field ordinal/action form", async (
     { ordinal: 1, action: "approve" },
   );
   assert.deepEqual(
-    await parseCandidateReviewActionRequest(actionRequest("ordinal=100&action=reject")),
-    { ordinal: 100, action: "reject" },
+    await parseCandidateReviewActionRequest(actionRequest("ordinal=100&action=approve")),
+    { ordinal: 100, action: "approve" },
   );
   assert.deepEqual(
     await parseCandidateReviewActionRequest(
@@ -324,6 +344,8 @@ test("accepts only the exact same-origin two-field ordinal/action form", async (
     actionRequest("action=approve&ordinal=1"),
     actionRequest("ordinal=01&action=approve"),
     actionRequest("ordinal=1&action=approved"),
+    actionRequest("ordinal=1&action=reject"),
+    actionRequest("ordinal=1&action=needs_changes"),
     actionRequest("ordinal=1&action=approve&extra=x"),
     actionRequest("ordinal=candidate-publication%3A1.0%3Araw&action=approve"),
     actionRequest("ordinal=1&action=approve", { "content-type": "application/json" }),
@@ -339,6 +361,16 @@ test("accepts only the exact same-origin two-field ordinal/action form", async (
   ]) {
     assert.equal(await parseCandidateReviewActionRequest(request), null);
   }
+});
+
+test("live review page exposes only the approve action", () => {
+  const source = readFileSync(
+    new URL("../app/candidate-review/page.tsx", import.meta.url),
+    "utf-8",
+  );
+  assert.match(source, /name="action" value="approve"/);
+  assert.doesNotMatch(source, /name="action" value="(?:reject|needs_changes)"/);
+  assert.doesNotMatch(source, />\s*Reject\s*</);
 });
 
 test("returns one fixed generic bodyless 303", async () => {

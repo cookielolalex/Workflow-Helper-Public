@@ -12,7 +12,7 @@ export default async function CandidateReviewPage() {
         <div>
           <p className="eyebrow">SYNTHETIC REVIEW</p>
           <h1>Candidate review queue</h1>
-          <p>Only redacted synthetic metadata and human review actions are shown.</p>
+          <p>Only redacted synthetic evidence and the bounded approval action are shown.</p>
         </div>
         <aside className="privacy-note">
           <strong>Server-side authority boundary</strong>
@@ -36,7 +36,7 @@ export default async function CandidateReviewPage() {
               <thead>
                 <tr>
                   <th scope="col">Candidate</th>
-                  <th scope="col">Actions</th>
+                  <th scope="col">Action</th>
                 </tr>
               </thead>
               <tbody>
@@ -48,9 +48,6 @@ export default async function CandidateReviewPage() {
                         <input type="hidden" name="ordinal" value={row.ordinal} />
                         <button type="submit" name="action" value="approve">
                           Approve
-                        </button>{" "}
-                        <button type="submit" name="action" value="reject">
-                          Reject
                         </button>
                       </form>
                     </td>
