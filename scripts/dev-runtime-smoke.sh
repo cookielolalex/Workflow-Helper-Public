@@ -97,6 +97,59 @@ fi
 
 status="$({
   curl --silent --show-error --max-time 10 \
+    --output "$smoke_dir/api-candidates.json" --write-out '%{http_code}' \
+    "$api_base/v1/control/candidate-publications?correlation_id=dev-smoke&limit=100" \
+    --header "Cookie: workflow_session=$reviewer_session" \
+    --header "Origin: https://review.synthetic.example" \
+    --header "X-Workflow-Dev-Reviewer-Proof: $reviewer_proof"
+} || true)"
+if ! API_CANDIDATES="$smoke_dir/api-candidates.json" python3 - <<'PY' \
+  >"$smoke_dir/api-candidate-verdict.txt"
+import json
+import os
+from pathlib import Path
+
+path = Path(os.environ["API_CANDIDATES"])
+count = "unknown"
+schema = "invalid"
+valid = False
+try:
+    if path.is_file() and path.stat().st_size <= 262_144:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        if isinstance(payload, dict):
+            value = payload.get("count")
+            if type(value) is int:
+                count = str(value)
+            items = payload.get("items")
+            valid = (
+                set(payload) == {"items", "count", "next_cursor"}
+                and type(value) is int
+                and value == 1
+                and isinstance(items, list)
+                and len(items) == 1
+                and payload.get("next_cursor") is None
+            )
+            if valid:
+                schema = "valid"
+except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+    pass
+print(f"count={count}; schema={schema}")
+raise SystemExit(0 if valid else 1)
+PY
+then
+  api_verdict="$(cat "$smoke_dir/api-candidate-verdict.txt")"
+  echo "Live API candidate discovery failed (status=$status; $api_verdict)." >&2
+  exit 1
+fi
+api_verdict="$(cat "$smoke_dir/api-candidate-verdict.txt")"
+if [[ "$status" != "200" ]]; then
+  echo "Live API candidate discovery failed (status=$status; $api_verdict)." >&2
+  exit 1
+fi
+echo "Live API candidate discovery passed (status=200; $api_verdict)."
+
+status="$({
+  curl --silent --show-error --max-time 10 \
     --output "$smoke_dir/candidate.html" --write-out '%{http_code}' \
     "$web_base/candidate-review"
 } || true)"
@@ -114,9 +167,48 @@ REVIEWER_CSRF="$reviewer_csrf" \
 python3 - <<'PY'
 import os
 import re
+from html import unescape
+from html.parser import HTMLParser
 from pathlib import Path
 
+
+class VisibleTextParser(HTMLParser):
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.hidden_depth = 0
+        self.parts = []
+
+    def handle_starttag(self, tag, attrs):
+        if tag.casefold() in {"script", "style"}:
+            self.hidden_depth += 1
+
+    def handle_endtag(self, tag):
+        if tag.casefold() in {"script", "style"} and self.hidden_depth:
+            self.hidden_depth -= 1
+
+    def handle_data(self, data):
+        if not self.hidden_depth:
+            self.parts.append(data)
+
+
+def visible_text(value):
+    parser = VisibleTextParser()
+    parser.feed(value)
+    parser.close()
+    return " ".join(unescape(" ".join(parser.parts)).split())
+
+
+probe = visible_text(
+    "Candidate <!-- hidden -->1"
+    "<script>Approve hidden-script</script>"
+    "<style>Reject hidden-style</style>"
+    "<!-- Candidate hidden-comment -->"
+)
+if probe != "Candidate 1":
+    raise SystemExit("visible-text normalization self-test failed")
+
 html = Path(os.environ["SMOKE_HTML"]).read_text(encoding="utf-8")
+visible = visible_text(html)
 required = (
     "Candidate review queue",
     "Candidates awaiting review",
@@ -124,8 +216,10 @@ required = (
     "Approve",
     "Reject",
 )
-if any(value not in html for value in required):
-    raise SystemExit("candidate review page did not render the live redacted candidate")
+if any(value not in visible for value in required):
+    raise SystemExit(
+        "live API candidate discovery passed; web redacted-view copy was incomplete"
+    )
 for value in (
     os.environ["CAPTURE_PROOF"],
     os.environ["WORKER_PROOF"],
@@ -183,10 +277,39 @@ fi
 EMPTY_HTML="$smoke_dir/empty.html" python3 - <<'PY'
 import os
 import re
+from html import unescape
+from html.parser import HTMLParser
 from pathlib import Path
 
+
+class VisibleTextParser(HTMLParser):
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.hidden_depth = 0
+        self.parts = []
+
+    def handle_starttag(self, tag, attrs):
+        if tag.casefold() in {"script", "style"}:
+            self.hidden_depth += 1
+
+    def handle_endtag(self, tag):
+        if tag.casefold() in {"script", "style"} and self.hidden_depth:
+            self.hidden_depth -= 1
+
+    def handle_data(self, data):
+        if not self.hidden_depth:
+            self.parts.append(data)
+
+
+def visible_text(value):
+    parser = VisibleTextParser()
+    parser.feed(value)
+    parser.close()
+    return " ".join(unescape(" ".join(parser.parts)).split())
+
+
 html = Path(os.environ["EMPTY_HTML"]).read_text(encoding="utf-8")
-if "No candidates awaiting review." not in html:
+if "No candidates awaiting review." not in visible_text(html):
     raise SystemExit("reviewed candidate remained visible")
 if re.search(r"candidate-(?:publication|skill):", html, re.IGNORECASE):
     raise SystemExit("empty candidate page exposed a raw candidate identifier")
