@@ -82,8 +82,10 @@ unused application state.
 The repository contains an `InMemorySessionRepository`, but no runtime
 dependency installs it. It also contains durable SQLite reference components,
 including `SQLiteLegacySessionStore`, browser-session, control, retention, and
-safety stores. Those classes provide synthetic code/test evidence; they are not
-constructed by the default application or Compose.
+safety stores. The module-global/default application does not construct them.
+The explicit guarded Compose development command constructs the exact six
+SQLite stores only inside its sealed synthetic no-network bundle; this is not
+production or live-provider wiring.
 
 ADR 0012 defines a sealed, no-network synthetic bundle that binds exact
 preconstructed SQLite and service objects. Only a separately created

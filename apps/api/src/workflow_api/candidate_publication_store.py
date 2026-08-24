@@ -8,8 +8,10 @@ that string can be reconstructed.
 
 The implementation follows Decision 116/120.  In particular, source evidence
 is never guessed, candidate approval is never inferred from a producer field,
-and a finalized row is create-once.  Provider reads, routes, runtime wiring,
-and migrations are intentionally outside this module.
+and a finalized row is create-once.  Provider reads, route registration,
+runtime composition, and migrations are intentionally outside this module.
+The sealed synthetic activation composes this store explicitly; importing the
+module still performs no wiring.
 """
 
 from __future__ import annotations
@@ -427,8 +429,8 @@ class SQLiteCandidatePublicationStore:
         self._busy_timeout_ms = int(float(busy_timeout_seconds) * 1000)
         self._clock = clock or (lambda: time.time_ns() // 1000)
 
-        # Construction is the explicit dormant activation boundary.  Importing
-        # this module above performs none of these filesystem operations.
+        # Explicit construction is the activation boundary. Importing this
+        # module above performs none of these filesystem operations.
         path.parent.mkdir(parents=True, exist_ok=True)
         with self._connection() as connection:
             connection.executescript(_SCHEMA)
@@ -458,10 +460,9 @@ class SQLiteCandidatePublicationStore:
     ) -> CandidatePublicationRecord:
         """Validate and reserve one complete evidence envelope.
 
-        ``evidence`` is the canonical spelling.  The aliases and keyword parts
-        exist only to make the dormant component easy to call from a future
-        adapter; they are normalized into the same exact envelope before any
-        SQLite mutation.
+        ``evidence`` is the canonical spelling. The aliases and keyword parts
+        remain compatibility inputs for explicit adapters; they are normalized
+        into the same exact envelope before any SQLite mutation.
         """
 
         scope = _checked_scope(scope)

@@ -1,10 +1,11 @@
-"""Dormant authenticated candidate-publication discovery.
+"""Authenticated discovery for the sealed synthetic candidate runtime.
 
 This module is intentionally a consumer-only boundary.  It owns no durable
-state, has no route or runtime wiring, and performs no work at import or
-construction time.  A read is admitted only when the publication store is
-explicitly bound to the same control database used by the authenticated
-control service.
+state and performs no work at import or construction time.  The service and
+its route are installed only when an exact sealed candidate bundle is supplied
+to a separately created application; the default application remains inert.
+A read is admitted only when the publication store is explicitly bound to the
+same control database used by the authenticated control service.
 """
 
 from __future__ import annotations

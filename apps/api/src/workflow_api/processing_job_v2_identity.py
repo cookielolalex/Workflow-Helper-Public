@@ -1,4 +1,8 @@
-"""Dormant, pure API payload identity for exact ProcessingJobV2 values."""
+"""Active pure API payload identity for exact ProcessingJobV2 values.
+
+The sealed candidate publication path uses this helper without adding provider
+or import-time runtime discovery.
+"""
 
 from __future__ import annotations
 

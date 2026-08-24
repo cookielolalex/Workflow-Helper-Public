@@ -1,4 +1,8 @@
-"""Dormant, pure semantic admission for raw package input references."""
+"""Active pure semantic admission for v2 raw-package input references.
+
+The default v2 worker path uses this helper without provider discovery or
+network access.
+"""
 
 from __future__ import annotations
 

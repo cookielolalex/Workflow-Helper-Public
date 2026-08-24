@@ -1,9 +1,10 @@
-"""Dormant authenticated candidate-publication discovery route.
+"""Guarded authenticated candidate-publication discovery route.
 
-The router is intentionally unregistered by :mod:`workflow_api.main`.  It is
-an adapter seam for focused tests and a later, separately governed runtime
-binding.  The default service dependency fails closed; it never discovers or
-constructs a publication store, control service, or alternate authority.
+The router is absent from the module-global/default application and is
+registered only when :mod:`workflow_api.main` receives an exact sealed
+candidate runtime bundle.  The default service dependency fails closed; it
+never discovers or constructs a publication store, control service, or
+alternate authority.
 """
 
 from __future__ import annotations
