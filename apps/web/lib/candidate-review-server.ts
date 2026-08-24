@@ -323,7 +323,6 @@ export async function parseCandidateReviewActionRequest(
     request.method !== "POST" ||
     url.pathname !== "/candidate-review/action" ||
     url.search !== "" ||
-    url.host !== config.browserHost ||
     request.headers.get("host") !== config.browserHost ||
     request.headers.get("origin") !== config.browserOrigin ||
     request.headers.get("content-type") !== "application/x-www-form-urlencoded" ||

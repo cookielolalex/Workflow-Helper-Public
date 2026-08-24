@@ -193,9 +193,14 @@ test("environment, API base, credentials, redirects, and byte bounds fail closed
   assert.deepEqual(await loadCandidateReviewQueue(oversized), { status: "unavailable" });
 });
 
-function actionRequest(body, headers = {}) {
-  return new Request("http://127.0.0.1:3000/candidate-review/action", {
-    method: "POST",
+function actionRequest(
+  body,
+  headers = {},
+  url = "http://127.0.0.1:3000/candidate-review/action",
+  method = "POST",
+) {
+  return new Request(url, {
+    method,
     headers: {
       host: "127.0.0.1:3000",
       origin: "http://127.0.0.1:3000",
@@ -203,7 +208,7 @@ function actionRequest(body, headers = {}) {
       "content-length": String(Buffer.byteLength(body)),
       ...headers,
     },
-    body,
+    ...(method === "GET" || method === "HEAD" ? {} : { body }),
   });
 }
 
@@ -217,17 +222,48 @@ test("accepts only the exact same-origin two-field ordinal/action form", async (
     await parseCandidateReviewActionRequest(actionRequest("ordinal=100&action=reject")),
     { ordinal: 100, action: "reject" },
   );
+  assert.deepEqual(
+    await parseCandidateReviewActionRequest(
+      actionRequest(
+        "ordinal=1&action=approve",
+        {},
+        "http://web:3000/candidate-review/action",
+      ),
+    ),
+    { ordinal: 1, action: "approve" },
+  );
 
   for (const request of [
+    actionRequest(
+      "ordinal=1&action=approve",
+      {},
+      "http://web:3000/candidate-review",
+    ),
+    actionRequest(
+      "ordinal=1&action=approve",
+      {},
+      "http://web:3000/candidate-review/action?next=private",
+    ),
+    actionRequest(
+      "ordinal=1&action=approve",
+      {},
+      "http://web:3000/candidate-review/action",
+      "GET",
+    ),
     actionRequest("action=approve&ordinal=1"),
     actionRequest("ordinal=01&action=approve"),
     actionRequest("ordinal=1&action=approved"),
     actionRequest("ordinal=1&action=approve&extra=x"),
     actionRequest("ordinal=candidate-publication%3A1.0%3Araw&action=approve"),
+    actionRequest("ordinal=1&action=approve", { "content-type": "application/json" }),
     actionRequest("ordinal=1&action=approve", { cookie: "private=1" }),
     actionRequest("ordinal=1&action=approve", { authorization: "Bearer private" }),
     actionRequest("ordinal=1&action=approve", { origin: "http://localhost:3000" }),
     actionRequest("ordinal=1&action=approve", { host: "localhost:3000" }),
+    actionRequest("ordinal=1&action=approve", { "x-workflow-dev-proof": "private" }),
+    actionRequest("ordinal=1&action=approve", {
+      "x-workflow-dev-reviewer-proof": "private",
+    }),
     actionRequest("ordinal=1&action=approve", { "x-csrf-token": "private" }),
   ]) {
     assert.equal(await parseCandidateReviewActionRequest(request), null);
