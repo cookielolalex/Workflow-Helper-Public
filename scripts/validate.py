@@ -280,16 +280,21 @@ def validate_processing_result_v2_semantics(document: dict[str, object]) -> None
 def validate_processing_result_v2_semantic_rejections(
     valid_document: dict[str, object],
 ) -> None:
+    def reverse_first_segment(value: dict[str, object]) -> None:
+        segment = value["operation_segments"][0]
+        segment["start_offset_seconds"] = segment["end_offset_seconds"] + 1.0
+
+    def overlap_second_segment(value: dict[str, object]) -> None:
+        previous = value["operation_segments"][0]
+        segment = value["operation_segments"][1]
+        segment["start_offset_seconds"] = previous["end_offset_seconds"] - 1.0
+
     mutations = {
         "noncontiguous sequence": lambda value: value["operation_segments"][1].__setitem__(
             "sequence", 3
         ),
-        "reversed bounds": lambda value: value["operation_segments"][0].__setitem__(
-            "start_offset_seconds", 1.5
-        ),
-        "unordered overlap": lambda value: value["operation_segments"][1].__setitem__(
-            "start_offset_seconds", 0.5
-        ),
+        "reversed bounds": reverse_first_segment,
+        "unordered overlap": overlap_second_segment,
         "unknown source evidence": lambda value: value["operation_segments"][0].__setitem__(
             "source_event_ids", ["33333333-3333-4333-8333-333333333333"]
         ),
