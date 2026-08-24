@@ -56,6 +56,17 @@ class CandidateDiscoveryUnavailableError(CandidateDiscoveryError):
     """The explicit publication/control read authority is unavailable."""
 
 
+class _CandidateReviewReadUnavailableError(CandidateDiscoveryUnavailableError):
+    """One candidate's authoritative control projection could not be read."""
+
+
+class _InvalidReviewProjection:
+    """Distinguish an invalid control result from a genuine absent projection."""
+
+
+_INVALID_REVIEW_PROJECTION = _InvalidReviewProjection()
+
+
 @dataclass(frozen=True, slots=True)
 class CandidateReviewQueueRecord:
     """Server-only review binding plus the minimum informed display evidence."""
@@ -218,11 +229,14 @@ class CandidateDiscoveryService:
                 progressed = True
                 if type(metadata) is not CandidatePublicationMetadata:
                     continue
-                review_status = self._effective_review_status(
-                    metadata,
-                    principal,
-                    correlation_id,
-                )
+                try:
+                    review_status = self._effective_review_status(
+                        metadata,
+                        principal,
+                        correlation_id,
+                    )
+                except (AuthorizationDeniedError, _CandidateReviewReadUnavailableError):
+                    continue
                 if review_status not in {"unreviewed", "pending"}:
                     continue
                 try:
@@ -244,11 +258,15 @@ class CandidateDiscoveryService:
                     item = _review_queue_record(record, review_status)
                 except (AttributeError, TypeError, ValueError, json.JSONDecodeError):
                     continue
-                if self._effective_review_status(
-                    record.without_bytes(),
-                    principal,
-                    correlation_id,
-                ) != review_status:
+                try:
+                    confirmed_status = self._effective_review_status(
+                        record.without_bytes(),
+                        principal,
+                        correlation_id,
+                    )
+                except (AuthorizationDeniedError, _CandidateReviewReadUnavailableError):
+                    continue
+                if confirmed_status != review_status:
                     continue
                 projected.append(item)
                 if len(projected) == MAX_DISCOVERY_LIMIT:
@@ -285,7 +303,7 @@ class CandidateDiscoveryService:
                 if type(metadata) is not CandidatePublicationMetadata:
                     continue
                 projection = self._review_projection(metadata, principal, correlation_id)
-                if projection is None or projection.status not in {
+                if type(projection) is not ReviewProjection or projection.status not in {
                     "approved",
                     "rejected",
                     "needs_changes",
@@ -367,6 +385,8 @@ class CandidateDiscoveryService:
         projection = self._review_projection(metadata, principal, correlation_id)
         if projection is None:
             return "unreviewed"
+        if type(projection) is not ReviewProjection:
+            return None
         if projection.status == "pending":
             return "pending"
         if projection.status in {"approved", "rejected", "needs_changes"}:
@@ -378,7 +398,7 @@ class CandidateDiscoveryService:
         metadata: CandidatePublicationMetadata,
         principal: AuthenticatedPrincipal,
         correlation_id: str,
-    ) -> ReviewProjection | None:
+    ) -> ReviewProjection | None | _InvalidReviewProjection:
         try:
             self._verify_authority()
             projection = self._control_service.read_candidate_review(
@@ -391,11 +411,11 @@ class CandidateDiscoveryService:
         except AuthorizationDeniedError:
             raise
         except (ControlStoreError, OSError, RuntimeError, sqlite3.Error) as exc:
-            raise CandidateDiscoveryUnavailableError(
+            raise _CandidateReviewReadUnavailableError(
                 "candidate discovery control authority is unavailable"
             ) from exc
         except (TypeError, ValueError, KeyError):
-            return None
+            return _INVALID_REVIEW_PROJECTION
         if projection is None:
             return None
         if (
@@ -408,7 +428,7 @@ class CandidateDiscoveryService:
             or type(projection.occurred_at) is not datetime
             or projection.occurred_at.tzinfo is not UTC
         ):
-            return None
+            return _INVALID_REVIEW_PROJECTION
         return projection
 
     def _authorize_read(
