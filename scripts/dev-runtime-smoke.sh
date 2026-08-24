@@ -348,12 +348,14 @@ required = (
     "4",
     "observed / unreviewed",
     "Approve",
-    "Reject",
 )
 if any(value not in visible for value in required):
     raise SystemExit(
         "live API candidate discovery passed; web redacted-view copy was incomplete"
     )
+for unsupported_action in ("Reject", "Needs changes"):
+    if unsupported_action in visible:
+        raise SystemExit("candidate review page exposed an unsupported action")
 for value in (
     os.environ["CAPTURE_PROOF"],
     os.environ["WORKER_PROOF"],
@@ -473,4 +475,4 @@ if [[ "$(cat "$smoke_dir/independent-verify.log")" != "synthetic candidate durab
   exit 1
 fi
 
-echo "Synthetic dev-runtime smoke passed: v2 seed, redacted queue, review action, and durable empty reopen."
+echo "Synthetic dev-runtime smoke passed: v2 seed, redacted queue, durable approval, and empty reopen."
