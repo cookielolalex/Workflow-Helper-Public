@@ -1,15 +1,15 @@
 // @ts-ignore The focused Node loader requires the explicit source extension.
 import { toCandidateReviewView, type CandidateReviewView } from "./candidate-review.ts";
 
-export const CANDIDATE_PUBLICATIONS_PATH =
-  "/v1/control/candidate-publications" as const;
+export const CANDIDATE_REVIEW_QUEUE_PATH =
+  "/v1/control/candidate-publications/review-queue" as const;
 export const MIN_CANDIDATE_REVIEW_LIMIT = 1 as const;
 export const MAX_CANDIDATE_REVIEW_LIMIT = 100 as const;
 export const MAX_CANDIDATE_REVIEW_CORRELATION_ID_LENGTH = 128 as const;
 export const MAX_CANDIDATE_REVIEW_CURSOR_LENGTH = 4096 as const;
 
 export type CandidateReviewRequest = {
-  readonly path: typeof CANDIDATE_PUBLICATIONS_PATH;
+  readonly path: typeof CANDIDATE_REVIEW_QUEUE_PATH;
   readonly method: "GET";
   readonly correlation_id: string;
   readonly limit: number;
@@ -32,7 +32,6 @@ export type CandidateReviewRequestInput = {
 };
 
 const RESPONSE_KEYS = ["status", "body"] as const;
-
 const unavailable = (): CandidateReviewView => ({ status: "unavailable" });
 
 function isPlainRecord(value: unknown): value is Record<string, unknown> {
@@ -60,10 +59,9 @@ function hasExactKeys<T extends readonly string[]>(
   for (const key of ownKeys) {
     if (typeof key !== "string" || !expected.includes(key)) return false;
   }
-  for (const key of expected) {
-    if (!Object.prototype.propertyIsEnumerable.call(value, key)) return false;
-  }
-  return true;
+  return expected.every((key) =>
+    Object.prototype.propertyIsEnumerable.call(value, key)
+  );
 }
 
 function validCorrelationId(value: unknown): value is string {
@@ -100,23 +98,23 @@ function requestInput(
   if (typeof value === "string") {
     return {
       correlation_id: value,
-      limit: limitOverride === undefined ? MAX_CANDIDATE_REVIEW_LIMIT : limitOverride as number,
+      limit: limitOverride === undefined
+        ? MAX_CANDIDATE_REVIEW_LIMIT
+        : limitOverride as number,
       ...(cursorOverride === undefined || cursorOverride === null
         ? {}
         : { cursor: cursorOverride as string }),
     };
   }
-
   if (!isPlainRecord(value)) return null;
-  const correlationId = value.correlation_id;
-  const limit = value.limit === undefined
-    ? MAX_CANDIDATE_REVIEW_LIMIT
-    : value.limit;
-  const cursor = value.cursor;
   return {
-    correlation_id: correlationId as string,
-    limit: limit as number,
-    ...(cursor === undefined || cursor === null ? {} : { cursor: cursor as string }),
+    correlation_id: value.correlation_id as string,
+    limit: value.limit === undefined
+      ? MAX_CANDIDATE_REVIEW_LIMIT
+      : value.limit as number,
+    ...(value.cursor === undefined || value.cursor === null
+      ? {}
+      : { cursor: value.cursor as string }),
   };
 }
 
@@ -131,7 +129,7 @@ function validRequestInput(
   );
 }
 
-/** Build the only descriptor accepted by the injected transport. */
+/** Build the only fixed-route descriptor accepted by the synthetic transport. */
 export function buildCandidateReviewRequest(
   input: CandidateReviewRequestInput | string,
   limit?: number,
@@ -140,21 +138,15 @@ export function buildCandidateReviewRequest(
   try {
     const normalized = requestInput(input, limit, cursor);
     if (!validRequestInput(normalized)) return null;
-
-    return normalized.cursor === undefined
-      ? {
-          path: CANDIDATE_PUBLICATIONS_PATH,
-          method: "GET",
-          correlation_id: normalized.correlation_id,
-          limit: normalized.limit!,
-        }
-      : {
-          path: CANDIDATE_PUBLICATIONS_PATH,
-          method: "GET",
-          correlation_id: normalized.correlation_id,
-          limit: normalized.limit!,
-          cursor: normalized.cursor,
-        };
+    return Object.freeze({
+      path: CANDIDATE_REVIEW_QUEUE_PATH,
+      method: "GET",
+      correlation_id: normalized.correlation_id,
+      limit: normalized.limit!,
+      ...(normalized.cursor === undefined
+        ? {}
+        : { cursor: normalized.cursor }),
+    });
   } catch {
     return null;
   }
@@ -172,7 +164,6 @@ function transportResult(value: unknown): CandidateReviewView {
     ) {
       return unavailable();
     }
-
     return toCandidateReviewView({
       status: "available",
       authenticated: true,
@@ -183,46 +174,7 @@ function transportResult(value: unknown): CandidateReviewView {
   }
 }
 
-function invocation(
-  first: unknown,
-  second: unknown,
-  third: unknown,
-  fourth: unknown,
-): { transport: CandidateReviewTransport; request: CandidateReviewRequest } | null {
-  let transport: unknown;
-  let input: unknown;
-  let limit: unknown;
-  let cursor: unknown;
-
-  if (typeof first === "function") {
-    transport = first;
-    input = second;
-    limit = typeof second === "string" ? third : undefined;
-    cursor = typeof second === "string" ? fourth : undefined;
-  } else if (typeof second === "function") {
-    transport = second;
-    input = first;
-    limit = typeof first === "string" ? third : undefined;
-    cursor = typeof first === "string" ? fourth : undefined;
-  } else {
-    return null;
-  }
-
-  if (typeof transport !== "function") return null;
-  const request = buildCandidateReviewRequest(
-    input as CandidateReviewRequestInput | string,
-    limit as number | undefined,
-    cursor as string | undefined,
-  );
-  return request === null
-    ? null
-    : { transport: transport as CandidateReviewTransport, request };
-}
-
-/**
- * Resolve one synthetic transport result into the existing closed view union.
- * The injected transport and this resolver are synchronous and side-effect free.
- */
+/** Resolve a synchronous fixed-route response into the closed redacted view. */
 export function readCandidateReview(
   first: CandidateReviewTransport | CandidateReviewRequestInput | string,
   second: CandidateReviewTransport | CandidateReviewRequestInput | string,
@@ -230,11 +182,19 @@ export function readCandidateReview(
   fourth?: string,
 ): CandidateReviewView {
   try {
-    const call = invocation(first, second, third, fourth);
-    if (call === null) return unavailable();
-
-    const supplied = call.transport(call.request);
-    return transportResult(supplied);
+    const transport = typeof first === "function"
+      ? first as CandidateReviewTransport
+      : typeof second === "function"
+        ? second as CandidateReviewTransport
+        : null;
+    const input = typeof first === "function" ? second : first;
+    const request = buildCandidateReviewRequest(
+      input as CandidateReviewRequestInput | string,
+      typeof input === "string" ? third : undefined,
+      typeof input === "string" ? fourth : undefined,
+    );
+    if (transport === null || request === null) return unavailable();
+    return transportResult(transport(request));
   } catch {
     return unavailable();
   }

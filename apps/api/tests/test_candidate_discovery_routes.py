@@ -10,6 +10,7 @@ from workflow_api.candidate_discovery_service import (
     CandidateDiscoveryService,
     CandidateDiscoveryUnavailableError,
     CandidateDiscoveryValidationError,
+    CandidateReviewQueueRecord,
 )
 from workflow_api.candidate_publication_service import CandidatePublicationService
 from workflow_api.candidate_publication_store import (
@@ -95,6 +96,10 @@ def test_main_app_keeps_dormant_route_unreachable() -> None:
         "/v1/control/candidate-publications?correlation_id=" + CORRELATION
     )
     assert response.status_code == 404
+    queue = TestClient(main_app).get(
+        "/v1/control/candidate-publications/review-queue"
+    )
+    assert queue.status_code == 404
 
 
 def test_default_service_dependency_fails_closed_without_a_fallback() -> None:
@@ -530,6 +535,87 @@ def test_response_is_strict_metadata_only_and_excludes_scope_internal_fields(
         "credential",
     }
     assert forbidden.isdisjoint(body["items"][0])
+
+
+def test_review_queue_route_is_static_exact_and_display_safe(
+    isolated_app: FastAPI,
+    service: CandidateDiscoveryService,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    metadata = _metadata()
+    row = CandidateReviewQueueRecord(
+        publication_key=metadata.publication_key,
+        review_target_id=metadata.review_target_id,
+        command_sequence=("LINE", "TRIM", "LINE", "TRIM"),
+        occurrence_count=4,
+        provenance="observed",
+        approval_status="unreviewed",
+        finalized_at_us=metadata.finalized_at_us,
+    )
+    calls: list[tuple[AuthenticatedPrincipal, str]] = []
+
+    def review_queue(
+        principal: AuthenticatedPrincipal,
+        *,
+        correlation_id: str,
+    ) -> list[CandidateReviewQueueRecord]:
+        calls.append((principal, correlation_id))
+        return [row]
+
+    monkeypatch.setattr(service, "list_review_queue", review_queue)
+    response = TestClient(isolated_app).get(
+        "/v1/control/candidate-publications/review-queue"
+    )
+
+    assert response.status_code == 200, response.text
+    assert calls == [(_principal(), "candidate-review-queue")]
+    assert response.json() == {
+        "items": [
+            {
+                "publication_key": metadata.publication_key,
+                "review_target_id": metadata.review_target_id,
+                "command_sequence": ["LINE", "TRIM", "LINE", "TRIM"],
+                "occurrence_count": 4,
+                "provenance": "observed",
+                "approval_status": "unreviewed",
+                "finalized_at_us": metadata.finalized_at_us,
+            }
+        ],
+        "count": 1,
+    }
+    assert set(response.json()["items"][0]) == {
+        "publication_key",
+        "review_target_id",
+        "command_sequence",
+        "occurrence_count",
+        "provenance",
+        "approval_status",
+        "finalized_at_us",
+    }
+    route_paths = [route.path for route in router.routes]
+    assert route_paths.index(
+        "/v1/control/candidate-publications/review-queue"
+    ) < route_paths.index(
+        "/v1/control/candidate-publications/{publication_key}/review"
+    )
+
+
+def test_review_queue_invalid_service_result_fails_closed(
+    isolated_app: FastAPI,
+    service: CandidateDiscoveryService,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        service,
+        "list_review_queue",
+        lambda *_args, **_kwargs: [object()],
+    )
+    response = TestClient(isolated_app).get(
+        "/v1/control/candidate-publications/review-queue"
+    )
+
+    assert response.status_code == 503
+    assert response.json() == {"detail": "candidate discovery unavailable"}
 
 
 def test_empty_results_are_200_and_do_not_become_existence_oracles(

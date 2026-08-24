@@ -23,6 +23,7 @@ from ..candidate_discovery_service import (
     CandidateDiscoveryService,
     CandidateDiscoveryUnavailableError,
     CandidateDiscoveryValidationError,
+    CandidateReviewQueueRecord,
 )
 from ..candidate_publication_service import CandidatePublicationService
 from ..candidate_publication_store import (
@@ -118,6 +119,46 @@ CandidatePublicationKey = Annotated[
 CandidateReviewTarget = Annotated[
     str, Field(min_length=1, max_length=256, pattern=_REVIEW_TARGET_PATTERN)
 ]
+
+
+class CandidateReviewQueueItem(StrictModel):
+    """Server-only review binding plus bounded informed display evidence."""
+
+    publication_key: CandidatePublicationKey
+    review_target_id: CandidateReviewTarget
+    command_sequence: tuple[Annotated[str, Field(min_length=1, max_length=128)], ...]
+    occurrence_count: Annotated[int, Field(ge=2, le=64)]
+    provenance: Literal["observed"]
+    approval_status: Literal["unreviewed"]
+    finalized_at_us: Annotated[int, Field(gt=0)]
+
+    @classmethod
+    def from_record(cls, value: CandidateReviewQueueRecord) -> CandidateReviewQueueItem:
+        if type(value) is not CandidateReviewQueueRecord:
+            raise CandidateDiscoveryUnavailableError(
+                "candidate review queue returned invalid evidence"
+            )
+        try:
+            return cls(
+                publication_key=value.publication_key,
+                review_target_id=value.review_target_id,
+                command_sequence=value.command_sequence,
+                occurrence_count=value.occurrence_count,
+                provenance=value.provenance,
+                approval_status=value.approval_status,
+                finalized_at_us=value.finalized_at_us,
+            )
+        except (AttributeError, TypeError, ValueError, ValidationError) as exc:
+            raise CandidateDiscoveryUnavailableError(
+                "candidate review queue returned invalid evidence"
+            ) from exc
+
+
+class CandidateReviewQueueResponse(StrictModel):
+    items: tuple[CandidateReviewQueueItem, ...]
+    count: int
+
+
 ReviewStatus = Literal["pending", "approved", "rejected", "needs_changes"]
 ReviewEvidenceText = Annotated[str, Field(max_length=512)]
 ReviewEvidenceValue = ReviewEvidenceText | int | float | bool | None
@@ -285,6 +326,46 @@ def _next_cursor(rows: list[CandidatePublicationMetadata], limit: int) -> str | 
         ) from exc
 
 
+@router.get(
+    "/candidate-publications/review-queue",
+    response_model=CandidateReviewQueueResponse,
+)
+def list_candidate_review_queue(
+    principal: PrincipalDependency,
+    service: ServiceDependency,
+) -> CandidateReviewQueueResponse:
+    """Return fixed, bounded informed evidence for the sealed synthetic reviewer."""
+
+    return _call(lambda: _list_candidate_review_queue(principal, service))
+
+
+def _list_candidate_review_queue(
+    principal: AuthenticatedPrincipal,
+    service: CandidateDiscoveryService,
+) -> CandidateReviewQueueResponse:
+    if type(principal) is not AuthenticatedPrincipal:
+        raise CandidateDiscoveryUnavailableError("candidate authentication unavailable")
+    if type(service) is not CandidateDiscoveryService:
+        raise CandidateDiscoveryUnavailableError("candidate discovery unavailable")
+    rows = service.list_review_queue(
+        principal,
+        correlation_id="candidate-review-queue",
+    )
+    if type(rows) is not list or len(rows) > MAX_DISCOVERY_LIMIT:
+        raise CandidateDiscoveryUnavailableError(
+            "candidate review queue returned an invalid result"
+        )
+    try:
+        items = tuple(CandidateReviewQueueItem.from_record(row) for row in rows)
+    except CandidateDiscoveryUnavailableError:
+        raise
+    except (AttributeError, TypeError, ValueError, ValidationError) as exc:
+        raise CandidateDiscoveryUnavailableError(
+            "candidate review queue returned invalid evidence"
+        ) from exc
+    return CandidateReviewQueueResponse(items=items, count=len(items))
+
+
 @router.post(
     "/candidate-publications/{publication_key}/review",
     response_model=CandidateReviewResponse,
@@ -403,11 +484,14 @@ __all__ = [
     "BoundedValidationRoute",
     "CandidatePublicationItem",
     "CandidatePublicationListResponse",
+    "CandidateReviewQueueItem",
+    "CandidateReviewQueueResponse",
     "CandidateReviewRequest",
     "CandidateReviewResponse",
     "get_candidate_discovery_service",
     "get_candidate_publication_service",
     "list_candidate_publications",
+    "list_candidate_review_queue",
     "review_candidate_publication",
     "router",
 ]
