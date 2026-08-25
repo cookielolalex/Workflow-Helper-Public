@@ -129,6 +129,10 @@ jobs:
           dotnet-version: "8.0.x"
       - run: pwsh -NoProfile -File scripts/windows-synthetic-pilot.ps1 -PreflightOnly
         working-directory: .
+        env:
+          CODEX_API_KEY: ""
+          CONTROL_PLANE_BEARER_TOKEN: ""
+          WORKFLOW_WORKER_TOKEN: ""
       - run: dotnet restore
       - run: dotnet build --configuration Release --no-restore
       - run: dotnet test tests/WorkflowHelper.CaptureAgent.Tests.csproj --configuration Release
