@@ -27,6 +27,14 @@ export default async function DashboardPage() {
           ).length,
         }
       : null;
+  const unreviewedCount =
+    reviewQueue.status === "populated"
+      ? reviewQueue.rows.filter((row) => row.review_status === "unreviewed").length
+      : 0;
+  const pendingCount =
+    reviewQueue.status === "populated"
+      ? reviewQueue.rows.filter((row) => row.review_status === "pending").length
+      : 0;
   const activeReviewMetric =
     reviewQueue.status === "unavailable"
       ? {
@@ -42,14 +50,14 @@ export default async function DashboardPage() {
           }
       : reviewQueue.status === "empty"
         ? {
-            value: 0,
-            detail: "No candidates awaiting review",
+            value: "0/0",
+            detail: "Bounded snapshot (maximum 100): 0 unreviewed · 0 pending",
             tone: "neutral" as const,
           }
         : {
-            value: reviewQueue.rows.length,
-            detail: `${reviewQueue.rows.length} ${reviewQueue.rows.length === 1 ? "candidate" : "candidates"} awaiting review · independent queue snapshot`,
-            tone: "warning" as const,
+            value: `${unreviewedCount}/${pendingCount}`,
+            detail: `Bounded snapshot (maximum 100): ${unreviewedCount} unreviewed · ${pendingCount} pending`,
+            tone: unreviewedCount || pendingCount ? ("warning" as const) : ("neutral" as const),
           };
   const outcomeCount =
     reviewOutcomes.status === "populated" ? reviewOutcomes.rows.length : null;

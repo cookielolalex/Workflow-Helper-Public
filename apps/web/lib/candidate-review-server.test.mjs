@@ -491,7 +491,8 @@ test("dashboard lifecycle counts use independent server snapshots", () => {
   assert.match(page, /Promise\.all/);
   assert.match(page, /reviewQueue\.status === "unavailable"/);
   assert.match(page, /reviewQueue\.status === "empty"/);
-  assert.match(page, /reviewQueue\.rows\.length/);
+  assert.match(page, /reviewQueue\.rows\.filter\(\(row\) => row\.review_status === "unreviewed"\)/);
+  assert.match(page, /reviewQueue\.rows\.filter\(\(row\) => row\.review_status === "pending"\)/);
   assert.match(page, /reviewOutcomes\.status === "unavailable"/);
   assert.match(page, /reviewOutcomes\.status === "empty"/);
   assert.match(page, /reviewOutcomes\.rows\.length/);
@@ -526,6 +527,26 @@ test("dashboard normalizes empty approved outcomes before rendering", () => {
   assert.match(page, /tone: approvedCount \? \("good" as const\) : \("neutral" as const\)/);
   assert.doesNotMatch(page, /value: approvedCount \?\? 0/);
   assert.doesNotMatch(page, /approvedCount === null/);
+});
+
+test("dashboard lifecycle counts use bounded queue status filters", () => {
+  const page = readFileSync(
+    new URL("../app/page.tsx", import.meta.url),
+    "utf-8",
+  );
+  assert.match(
+    page,
+    /const unreviewedCount =\s*reviewQueue\.status === "populated"\s*\?\s*reviewQueue\.rows\.filter\(\(row\) => row\.review_status === "unreviewed"\)\.length\s*:\s*0;/s,
+  );
+  assert.match(
+    page,
+    /const pendingCount =\s*reviewQueue\.status === "populated"\s*\?\s*reviewQueue\.rows\.filter\(\(row\) => row\.review_status === "pending"\)\.length\s*:\s*0;/s,
+  );
+  assert.match(page, /value: "0\/0"/);
+  assert.match(page, /Bounded snapshot \(maximum 100\): 0 unreviewed · 0 pending/);
+  assert.match(page, /Bounded snapshot \(maximum 100\): \$\{unreviewedCount\} unreviewed · \$\{pendingCount\} pending/);
+  assert.match(page, /reviewQueue\.status === "loading"/);
+  assert.doesNotMatch(page, /pendingReview/);
 });
 
 test("each legal effective-state action re-fetches and posts exactly once", async () => {
