@@ -1,356 +1,706 @@
 [CmdletBinding()]
 param(
     [string]$EvidencePath = "pilot-evidence/windows-synthetic-pilot.json",
-    [int]$TimeoutSeconds = 120
+    [int]$TimeoutSeconds = 180,
+    [switch]$PreflightOnly
 )
 
 $ErrorActionPreference = "Stop"
 $ProgressPreference = "SilentlyContinue"
+
 $repoRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot ".."))
-$syntheticOutput = Join-Path ([IO.Path]::GetTempPath()) (
-    "workflow-helper-synthetic-pilot-{0}-{1}" -f $PID, [Guid]::NewGuid().ToString("N"))
-$sessionId = "d6d9e5b7-c9bc-4eb1-ae4a-1a14ed5b1350"
+$canonicalSessionId = "d6d9e5b7-c9bc-4eb1-ae4a-1a14ed5b1350"
+$expectedEvidencePath = [IO.Path]::GetFullPath(
+    (Join-Path $repoRoot "pilot-evidence/windows-synthetic-pilot.json"))
+$resolvedEvidencePath = if ([IO.Path]::IsPathRooted($EvidencePath)) {
+    [IO.Path]::GetFullPath($EvidencePath)
+} else {
+    [IO.Path]::GetFullPath((Join-Path $repoRoot $EvidencePath))
+}
+if (-not [string]::Equals(
+        $resolvedEvidencePath,
+        $expectedEvidencePath,
+        [StringComparison]::OrdinalIgnoreCase)) {
+    throw "EvidencePath must remain pilot-evidence/windows-synthetic-pilot.json"
+}
+
+$forbiddenProviderSources = @(
+    "AWS_ACCESS_KEY_ID",
+    "AWS_SECRET_ACCESS_KEY",
+    "AWS_SESSION_TOKEN",
+    "AWS_SECURITY_TOKEN",
+    "AWS_PROFILE",
+    "AWS_WEB_IDENTITY_TOKEN_FILE",
+    "AWS_ROLE_ARN",
+    "AWS_SHARED_CREDENTIALS_FILE",
+    "AWS_CONFIG_FILE",
+    "AWS_CA_BUNDLE",
+    "AWS_SDK_LOAD_CONFIG",
+    "AWS_CONTAINER_CREDENTIALS_RELATIVE_URI",
+    "AWS_CONTAINER_CREDENTIALS_FULL_URI",
+    "AWS_CONTAINER_AUTHORIZATION_TOKEN",
+    "AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE",
+    "AWS_EC2_METADATA_SERVICE_ENDPOINT",
+    "AWS_EC2_METADATA_SERVICE_ENDPOINT_MODE",
+    "BOTO_CONFIG",
+    "GOOGLE_APPLICATION_CREDENTIALS",
+    "GOOGLE_OAUTH_ACCESS_TOKEN",
+    "GOOGLE_CREDENTIALS",
+    "GOOGLE_AUTHENTICATION",
+    "GOOGLE_EXTERNAL_ACCOUNT_AUDIENCE",
+    "GOOGLE_EXTERNAL_ACCOUNT_TOKEN_TYPE",
+    "GOOGLE_EXTERNAL_ACCOUNT_IMPERSONATED_EMAIL",
+    "GOOGLE_WORKLOAD_IDENTITY_PROVIDER",
+    "GOOGLE_CLOUD_PROJECT",
+    "CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE",
+    "CLOUDSDK_CONFIG",
+    "GCE_METADATA_HOST",
+    "GCE_METADATA_IP",
+    "AWS_ENDPOINT_URL",
+    "AWS_S3_PRESIGNED_ENDPOINT_URL",
+    "PROCESSING_QUEUE_URL"
+)
+
 $checks = [ordered]@{
+    windows_powershell_dotnet = "NOT_RUN"
     safety_defaults = "NOT_RUN"
-    local_tooling = "NOT_RUN"
-    local_compose = "NOT_RUN"
-    api_health = "NOT_RUN"
-    queue_baseline = "NOT_RUN"
-    package_register_upload = "NOT_RUN"
-    queue_enqueue = "NOT_RUN"
-    worker_timeline = "NOT_RUN"
-    localstack_artifact = "NOT_RUN"
-    api_readback = "NOT_RUN"
-    web_readback = "NOT_RUN"
+    canonical_fixture = "NOT_RUN"
+    fail_closed_configuration = "NOT_RUN"
+    evidence_boundary = "NOT_RUN"
+    docker_tooling = "NOT_RUN"
+    sealed_runtime = "NOT_RUN"
+    upload_receipt = "NOT_RUN"
+    v2_timeline = "NOT_RUN"
+    redacted_candidate = "NOT_RUN"
+    human_browser_confirmation = "NOT_RUN"
+    approval_terminal_outcome = "NOT_RUN"
+    approved_catalog_export = "NOT_RUN"
+    independent_durable_reopen = "NOT_RUN"
+    scoped_cleanup = "NOT_RUN"
 }
 $evidence = [ordered]@{
-    schema_version = "1.1"
-    pilot_mode = "generated-synthetic-only"
+    schema_version = "2.0"
+    pilot_mode = if ($PreflightOnly) { "preflight-only" } else { "controlled-synthetic" }
     result = "FAIL"
-    session_id = $sessionId
-    package_sha256 = $null
-    package_size_bytes = $null
     recording_included = $false
+    human_browser_confirmed = $false
     checks = $checks
     error = $null
-    residual_manual_step = "Open the session URL in a browser on the controlled Windows host and visually confirm the rendered timeline; this script verifies HTTP content but cannot attest human-visible rendering."
 }
-$currentCheck = "safety_defaults"
+
+$currentCheck = "windows_powershell_dotnet"
+$tempRoot = $null
+$composePrefix = $null
+$runtimeStarted = $false
+$finalExitCode = 1
 
 function Invoke-CheckedCommand {
-    param([string]$FilePath, [string[]]$ArgumentList)
+    param(
+        [Parameter(Mandatory = $true)][string]$FilePath,
+        [Parameter(Mandatory = $true)][string[]]$ArgumentList
+    )
     $output = @(& $FilePath @ArgumentList 2>&1 | ForEach-Object { $_.ToString() })
-    if ($LASTEXITCODE -ne 0) {
-        throw "$FilePath failed with exit code $LASTEXITCODE`: $($output -join ' ')"
+    $exitCode = $LASTEXITCODE
+    if ($exitCode -ne 0) {
+        throw "$FilePath failed with exit code $exitCode"
     }
     return $output
 }
 
-function Read-DevelopmentEnvironment {
-    param([string]$Path)
-    $values = @{}
-    foreach ($line in Get-Content -LiteralPath $Path) {
-        $trimmed = $line.Trim()
-        if (-not $trimmed -or $trimmed.StartsWith("#")) { continue }
-        $separator = $trimmed.IndexOf("=")
-        if ($separator -gt 0) {
-            $values[$trimmed.Substring(0, $separator)] = $trimmed.Substring($separator + 1)
-        }
+function Invoke-Compose {
+    param([Parameter(Mandatory = $true)][string[]]$ArgumentList)
+    if ($null -eq $script:composePrefix) {
+        throw "Compose was not configured"
     }
-    return $values
+    return Invoke-CheckedCommand "docker" ($script:composePrefix + $ArgumentList)
 }
 
-function Assert-NoControlCredentials {
-    param([hashtable]$Development)
-    foreach ($name in @("CONTROL_PLANE_BEARER_TOKEN", "WORKFLOW_WORKER_TOKEN")) {
-        $fileValue = if ($Development.ContainsKey($name)) { $Development[$name] } else { $null }
-        $processValue = [Environment]::GetEnvironmentVariable($name)
-        if (-not [string]::IsNullOrWhiteSpace($fileValue) -or
-            -not [string]::IsNullOrWhiteSpace($processValue)) {
-            throw "$name must be unset for the credential-free synthetic pilot"
-        }
-    }
+function New-HexProof {
+    return [Convert]::ToHexString(
+        [Security.Cryptography.RandomNumberGenerator]::GetBytes(32)
+    ).ToLowerInvariant()
 }
 
-function Wait-ForJson {
-    param([string]$Uri, [scriptblock]$Accept)
-    $deadline = [DateTimeOffset]::UtcNow.AddSeconds($TimeoutSeconds)
-    do {
-        try {
-            $value = Invoke-RestMethod -Uri $Uri -TimeoutSec 5
-            if (& $Accept $value) { return $value }
-        } catch {
-            # Startup and processing are intentionally polled to a fixed deadline.
-        }
-        Start-Sleep -Seconds 2
-    } while ([DateTimeOffset]::UtcNow -lt $deadline)
-    throw "Timed out waiting for $Uri"
-}
-
-function Wait-ForWebContent {
-    param([string]$Uri, [string[]]$RequiredText)
-    $deadline = [DateTimeOffset]::UtcNow.AddSeconds($TimeoutSeconds)
-    do {
-        try {
-            $response = Invoke-WebRequest -Uri $Uri -TimeoutSec 5 -UseBasicParsing
-            $allPresent = $response.StatusCode -eq 200
-            foreach ($text in $RequiredText) {
-                $allPresent = $allPresent -and $response.Content.Contains($text)
-            }
-            if ($allPresent) { return $response }
-        } catch {
-            # The web container and its API-backed route may become ready independently.
-        }
-        Start-Sleep -Seconds 2
-    } while ([DateTimeOffset]::UtcNow -lt $deadline)
-    throw "Timed out waiting for rendered content from $Uri"
-}
-
-function ConvertTo-NonNegativeQueueCount {
-    param(
-        [object]$Attributes,
-        [string]$Name
+function New-UrlSafeProof {
+    $value = [Convert]::ToBase64String(
+        [Security.Cryptography.RandomNumberGenerator]::GetBytes(32)
     )
-    if ($null -eq $Attributes) {
-        throw "Queue evidence is missing the Attributes object"
-    }
-    $property = $Attributes.PSObject.Properties[$Name]
-    if ($null -eq $property -or $null -eq $property.Value) {
-        throw "Queue evidence is missing required attribute: $Name"
-    }
-    [long]$parsed = 0
-    $valid = [long]::TryParse(
-        $property.Value.ToString(),
-        [Globalization.NumberStyles]::None,
-        [Globalization.CultureInfo]::InvariantCulture,
-        [ref]$parsed)
-    if (-not $valid -or $parsed -lt 0) {
-        throw "Queue evidence attribute must be a non-negative integer: $Name"
-    }
-    return $parsed
+    return $value.TrimEnd("=").Replace("+", "-").Replace("/", "_")
 }
 
-function Get-QueueDepth {
-    param([string]$QueueUrl)
-    $response = (Invoke-CheckedCommand "docker" @(
-        "compose", "exec", "-T", "localstack", "awslocal", "sqs", "get-queue-attributes",
-        "--queue-url", $QueueUrl, "--attribute-names",
-        "ApproximateNumberOfMessages", "ApproximateNumberOfMessagesNotVisible",
-        "ApproximateNumberOfMessagesDelayed", "--output", "json"
-    ) -join "`n") | ConvertFrom-Json
-    if ($null -eq $response) {
-        throw "Queue evidence response is empty"
-    }
-    $attributesProperty = $response.PSObject.Properties["Attributes"]
-    if ($null -eq $attributesProperty -or $null -eq $attributesProperty.Value) {
-        throw "Queue evidence response is missing the Attributes object"
-    }
-    $attributes = $attributesProperty.Value
-    $visible = ConvertTo-NonNegativeQueueCount $attributes "ApproximateNumberOfMessages"
-    $notVisible = ConvertTo-NonNegativeQueueCount `
-        $attributes "ApproximateNumberOfMessagesNotVisible"
-    $delayed = ConvertTo-NonNegativeQueueCount `
-        $attributes "ApproximateNumberOfMessagesDelayed"
-    return [PSCustomObject]@{
-        Visible = $visible
-        NotVisible = $notVisible
-        Delayed = $delayed
-        Total = $visible + $notVisible + $delayed
+function Get-FreeLoopbackPort {
+    $listener = [Net.Sockets.TcpListener]::new([Net.IPAddress]::Loopback, 0)
+    try {
+        $listener.Start()
+        return ([Net.IPEndPoint]$listener.LocalEndpoint).Port
+    } finally {
+        $listener.Stop()
     }
 }
 
-function Wait-ForQueuedMessage {
-    param([string]$QueueUrl)
-    $deadline = [DateTimeOffset]::UtcNow.AddSeconds(15)
+function Assert-NoAmbientProviderSources {
+    foreach ($name in $script:forbiddenProviderSources) {
+        $value = [Environment]::GetEnvironmentVariable(
+            $name,
+            [EnvironmentVariableTarget]::Process)
+        if (-not [string]::IsNullOrWhiteSpace($value)) {
+            throw "Ambient provider configuration is forbidden: $name"
+        }
+    }
+}
+
+function Assert-SafeSurface {
+    param(
+        [Parameter(Mandatory = $true)][string]$Content,
+        [Parameter(Mandatory = $true)][string[]]$PrivateValues,
+        [switch]$ForbidIdentifiers
+    )
+    if ($Content.Length -gt 1048576) {
+        throw "Synthetic surface exceeded its bound"
+    }
+    foreach ($value in $PrivateValues) {
+        if (-not [string]::IsNullOrEmpty($value) -and $Content.Contains($value)) {
+            throw "Synthetic surface exposed private proof material"
+        }
+    }
+    foreach ($name in @("publication_key", "review_target_id", "reason_code", "sha256")) {
+        if ($Content.Contains($name)) {
+            throw "Synthetic surface exposed private server evidence"
+        }
+    }
+    if ($Content -match "(?i)candidate-(publication|skill):") {
+        throw "Synthetic surface exposed a raw candidate identifier"
+    }
+    if ($ForbidIdentifiers) {
+        if ($Content -match "(?i)\b[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\b") {
+            throw "Synthetic surface exposed a UUID"
+        }
+        if ($Content -match "(?i)\b[a-f0-9]{64}\b") {
+            throw "Synthetic surface exposed a digest"
+        }
+    }
+}
+
+function Invoke-BoundedWebRequest {
+    param(
+        [Parameter(Mandatory = $true)][string]$Uri,
+        [ValidateSet("GET", "POST")][string]$Method = "GET",
+        [hashtable]$Headers = @{},
+        [string]$Body = "",
+        [string]$ContentType = "",
+        [int]$MaximumRedirection = 5
+    )
+    $arguments = @{
+        Uri = $Uri
+        Method = $Method
+        Headers = $Headers
+        TimeoutSec = 10
+        UseBasicParsing = $true
+        MaximumRedirection = $MaximumRedirection
+        SkipHttpErrorCheck = $true
+    }
+    if ($Method -eq "POST") {
+        $arguments.Body = $Body
+        $arguments.ContentType = $ContentType
+    }
+    $response = Invoke-WebRequest @arguments
+    if ($response.RawContentLength -gt 1048576) {
+        throw "Synthetic HTTP response exceeded its bound"
+    }
+    return $response
+}
+
+function Wait-ForHealth {
+    param([Parameter(Mandatory = $true)][string]$Uri)
+    $deadline = [DateTimeOffset]::UtcNow.AddSeconds($script:TimeoutSeconds)
     do {
-        $depth = Get-QueueDepth $QueueUrl
-        if ($depth.Visible -ge 1) { return $depth.Visible }
-        Start-Sleep -Seconds 1
+        try {
+            $response = Invoke-BoundedWebRequest -Uri $Uri
+            if ($response.StatusCode -eq 200) {
+                $payload = $response.Content | ConvertFrom-Json
+                if (
+                    $payload.status -eq "ok" -and
+                    $payload.service -eq "workflow-helper-api" -and
+                    $payload.environment -eq "synthetic"
+                ) {
+                    return
+                }
+            }
+        } catch {
+            # The bounded local runtime may still be starting.
+        }
+        Start-Sleep -Seconds 2
     } while ([DateTimeOffset]::UtcNow -lt $deadline)
-    throw "No processing message was visible while the worker was stopped"
+    throw "Timed out waiting for the sealed synthetic runtime"
 }
 
-$savedEnvironment = @{}
+function Write-BoundedEvidence {
+    $evidenceDirectory = Split-Path -Parent $script:resolvedEvidencePath
+    if ($evidenceDirectory) {
+        New-Item -ItemType Directory -Path $evidenceDirectory -Force | Out-Null
+    }
+    $json = $script:evidence | ConvertTo-Json -Depth 6
+    if ([Text.Encoding]::UTF8.GetByteCount($json) -gt 32768) {
+        throw "Pilot evidence exceeded its bound"
+    }
+    Set-Content -LiteralPath $script:resolvedEvidencePath -Value $json -Encoding utf8
+    Write-Output $json
+}
+
 try {
     Push-Location $repoRoot
 
     if ($env:OS -ne "Windows_NT") {
-        throw "This controlled pilot harness must run on Windows"
+        throw "This controlled pilot must run on Windows"
     }
-    $settings = Get-Content "apps/capture-agent/appsettings.json" -Raw | ConvertFrom-Json
-    if ($settings.Capture.CaptureEnabled -ne $false -or
+    if ($PSVersionTable.PSVersion.Major -lt 7) {
+        throw "PowerShell 7 or later is required"
+    }
+    if (-not (Get-Command "dotnet" -ErrorAction SilentlyContinue)) {
+        throw "The .NET SDK is required"
+    }
+    $dotnetVersion = (Invoke-CheckedCommand "dotnet" @("--version") | Select-Object -Last 1).Trim()
+    $parsedDotnetVersion = $null
+    if (
+        -not [Version]::TryParse($dotnetVersion.Split("-")[0], [ref]$parsedDotnetVersion) -or
+        $parsedDotnetVersion.Major -lt 8
+    ) {
+        throw ".NET 8 or later is required"
+    }
+    Assert-NoAmbientProviderSources
+    $checks.windows_powershell_dotnet = "PASS"
+
+    $currentCheck = "safety_defaults"
+    $settings = Get-Content -LiteralPath (
+        Join-Path $repoRoot "apps/capture-agent/appsettings.json"
+    ) -Raw | ConvertFrom-Json
+    if (
+        $settings.Capture.CaptureEnabled -ne $false -or
         $settings.Capture.ConsentAcknowledged -ne $false -or
-        $settings.Upload.Enabled -ne $false) {
-        throw "Committed capture, consent, and upload defaults must all remain false"
+        $settings.Upload.Enabled -ne $false
+    ) {
+        throw "Committed capture, consent, and upload defaults must remain false"
     }
-    $program = Get-Content "apps/capture-agent/Program.cs" -Raw
+    $program = Get-Content -LiteralPath (
+        Join-Path $repoRoot "apps/capture-agent/Program.cs"
+    ) -Raw
     if (-not $program.Contains("AddSingleton<ICaptureRecorder, DisabledCaptureRecorder>")) {
-        throw "DisabledCaptureRecorder is not the normal-mode registration"
+        throw "DisabledCaptureRecorder must remain the normal-mode recorder"
     }
     $checks.safety_defaults = "PASS"
 
-    $currentCheck = "local_tooling"
-    foreach ($command in @("dotnet", "docker")) {
-        if (-not (Get-Command $command -ErrorAction SilentlyContinue)) {
-            throw "Required local command is missing: $command"
+    $currentCheck = "canonical_fixture"
+    $fixturePath = Join-Path $repoRoot "contracts/examples/session.json"
+    $fixtureFile = Get-Item -LiteralPath $fixturePath
+    if ($fixtureFile.LinkType -or $fixtureFile.Length -le 0 -or $fixtureFile.Length -gt 1048576) {
+        throw "Canonical fixture must be a bounded regular file"
+    }
+    $fixture = Get-Content -LiteralPath $fixturePath -Raw | ConvertFrom-Json
+    $commands = @(
+        $fixture.cad_events |
+            Where-Object { $_.event_type -eq "cad_command" } |
+            ForEach-Object { $_.command_name }
+    )
+    if (
+        $fixture.schema_version -ne "1.0" -or
+        $fixture.recording -ne $null -or
+        @($fixture.cad_events).Count -ne 8 -or
+        @($fixture.input_artifacts).Count -ne 1 -or
+        @($fixture.output_artifacts).Count -ne 1 -or
+        ($commands -join ",") -ne "LINE,TRIM,LINE,TRIM"
+    ) {
+        throw "Canonical rich fixture shape is invalid"
+    }
+    $checks.canonical_fixture = "PASS"
+
+    $currentCheck = "fail_closed_configuration"
+    $composeText = Get-Content -LiteralPath (
+        Join-Path $repoRoot "docker-compose.yml"
+    ) -Raw
+    foreach ($required in @(
+        'command: ["python", "-m", "workflow_api.dev_server"]',
+        'WORKFLOW_DEV_CAPTURE_PROOF: ${WORKFLOW_DEV_CAPTURE_PROOF:-}',
+        'WORKFLOW_DEV_WORKER_PROOF: ${WORKFLOW_DEV_WORKER_PROOF:-}',
+        'WORKFLOW_DEV_REVIEWER_PROOF: ${WORKFLOW_DEV_REVIEWER_PROOF:-}',
+        'WORKFLOW_DEV_REVIEWER_SESSION: ${WORKFLOW_DEV_REVIEWER_SESSION:-}',
+        'WORKFLOW_DEV_REVIEWER_CSRF: ${WORKFLOW_DEV_REVIEWER_CSRF:-}',
+        './contracts/examples/session.json:/workspace/session.json:ro',
+        './scripts/dev-runtime-seed.py:/workspace/dev-runtime-seed.py:ro'
+    )) {
+        if (-not $composeText.Contains($required)) {
+            throw "Sealed Compose fail-closed configuration drifted"
         }
     }
-    Invoke-CheckedCommand "dotnet" @("--version") | Out-Null
+    $checks.fail_closed_configuration = "PASS"
+
+    $currentCheck = "evidence_boundary"
+    $evidenceRoot = [IO.Path]::GetFullPath((Join-Path $repoRoot "pilot-evidence")) +
+        [IO.Path]::DirectorySeparatorChar
+    if (
+        -not $resolvedEvidencePath.StartsWith(
+            $evidenceRoot,
+            [StringComparison]::OrdinalIgnoreCase) -or
+        [IO.Path]::GetFileName($resolvedEvidencePath) -ne
+            "windows-synthetic-pilot.json"
+    ) {
+        throw "Pilot evidence path is outside its local bound"
+    }
+    $checks.evidence_boundary = "PASS"
+
+    if ($PreflightOnly) {
+        $checks.scoped_cleanup = "PASS"
+        $evidence.result = "PASS"
+        $finalExitCode = 0
+        return
+    }
+
+    $currentCheck = "docker_tooling"
+    if (-not (Get-Command "docker" -ErrorAction SilentlyContinue)) {
+        throw "Docker Desktop is required for the full pilot"
+    }
     Invoke-CheckedCommand "docker" @("info") | Out-Null
     Invoke-CheckedCommand "docker" @("compose", "version") | Out-Null
-    $checks.local_tooling = "PASS"
+    $checks.docker_tooling = "PASS"
 
-    $currentCheck = "local_compose"
-    if (-not (Test-Path ".env")) {
-        throw "Missing .env; copy .env.example to .env without adding real credentials"
+    $captureProof = New-HexProof
+    $workerProof = New-HexProof
+    $reviewerProof = New-HexProof
+    $reviewerSession = New-UrlSafeProof
+    $reviewerCsrf = New-UrlSafeProof
+    $privateValues = @(
+        $captureProof,
+        $workerProof,
+        $reviewerProof,
+        $reviewerSession,
+        $reviewerCsrf
+    )
+
+    $tempRoot = Join-Path ([IO.Path]::GetTempPath()) (
+        "workflow-helper-win-pilot-{0}-{1}" -f $PID, [Guid]::NewGuid().ToString("N"))
+    New-Item -ItemType Directory -Path $tempRoot | Out-Null
+    $runtimeEnv = Join-Path $tempRoot "runtime.env"
+    $apiPort = Get-FreeLoopbackPort
+    do {
+        $webPort = Get-FreeLoopbackPort
+    } while ($webPort -eq $apiPort)
+    $projectName = (
+        "workflow-helper-win-pilot-{0}-{1}" -f
+            $PID,
+            [Guid]::NewGuid().ToString("N").Substring(0, 12)
+    ).ToLowerInvariant()
+    $runtimeLines = @(
+        "WORKFLOW_COMPOSE_ENV_FILE=$runtimeEnv",
+        "WORKFLOW_API_PORT=$apiPort",
+        "WORKFLOW_WEB_PORT=$webPort",
+        "ENVIRONMENT=development",
+        "LOG_LEVEL=INFO",
+        "AWS_REGION=ap-northeast-1",
+        "RAW_BUCKET=workflow-helper-raw-dev",
+        "PROCESSED_BUCKET=workflow-helper-processed-dev",
+        "RAW_RETENTION_DAYS=14",
+        "WORKFLOW_DEV_DATA_DIR=/var/lib/workflow-helper/runtime",
+        "WORKFLOW_DEV_CAPTURE_PROOF=$captureProof",
+        "WORKFLOW_DEV_WORKER_PROOF=$workerProof",
+        "WORKFLOW_DEV_REVIEWER_PROOF=$reviewerProof",
+        "WORKFLOW_DEV_REVIEWER_SESSION=$reviewerSession",
+        "WORKFLOW_DEV_REVIEWER_CSRF=$reviewerCsrf"
+    )
+    Set-Content -LiteralPath $runtimeEnv -Value $runtimeLines -Encoding utf8
+    $composePrefix = @(
+        "compose",
+        "--env-file", $runtimeEnv,
+        "--file", (Join-Path $repoRoot "docker-compose.yml"),
+        "--project-name", $projectName
+    )
+
+    $currentCheck = "sealed_runtime"
+    # Mark the scoped project as started before Compose is invoked so a
+    # partially-created project is still removed if startup fails.
+    $runtimeStarted = $true
+    Invoke-Compose @("up", "--detach", "--wait", "--wait-timeout", "180", "web") |
+        Out-Null
+    $apiBase = "http://127.0.0.1:$apiPort"
+    $webBase = "http://127.0.0.1:$webPort"
+    Wait-ForHealth "$apiBase/health"
+    $checks.sealed_runtime = "PASS"
+
+    $currentCheck = "upload_receipt"
+    $seedLogs = Invoke-Compose @("logs", "--no-color", "seed")
+    if (($seedLogs -join [Environment]::NewLine) -notmatch "synthetic candidate seed complete") {
+        throw "Canonical seed did not complete its upload receipt and processing chain"
     }
-    $development = Read-DevelopmentEnvironment ".env"
-    Assert-NoControlCredentials $development
-    $requiredLocalValues = [ordered]@{
-        ENVIRONMENT = "development"
-        AWS_ENDPOINT_URL = "http://localstack:4566"
-        AWS_ACCESS_KEY_ID = "test"
-        AWS_SECRET_ACCESS_KEY = "test"
-        RAW_BUCKET = "workflow-helper-raw-dev"
-        PROCESSED_BUCKET = "workflow-helper-processed-dev"
-        PROCESSING_QUEUE_URL = "http://localstack:4566/000000000000/workflow-helper-processing"
+    $checks.upload_receipt = "PASS"
+
+    $currentCheck = "v2_timeline"
+    $sessionResponse = Invoke-BoundedWebRequest (
+        "$webBase/sessions/$canonicalSessionId")
+    if ($sessionResponse.StatusCode -ne 200) {
+        throw "Synthetic session page was unavailable"
     }
-    foreach ($entry in $requiredLocalValues.GetEnumerator()) {
-        if ($development[$entry.Key] -ne $entry.Value) {
-            throw ".env must use the checked LocalStack development value for $($entry.Key)"
+    $sessionHtml = [string]$sessionResponse.Content
+    foreach ($required in @(
+        "Meaningful operations",
+        "8 meaningful operations from 8 observed events.",
+        "Deterministic operation segments",
+        "Segment 1",
+        "Segment 4",
+        "Commands: LINE",
+        "Commands: TRIM",
+        "Review candidates"
+    )) {
+        if (-not $sessionHtml.Contains($required)) {
+            throw "Synthetic v2 timeline evidence was incomplete"
         }
     }
-    if ($development.ContainsKey("AWS_S3_PRESIGNED_ENDPOINT_URL") -and
-        $development["AWS_S3_PRESIGNED_ENDPOINT_URL"] -ne "http://localhost:4566") {
-        throw ".env AWS_S3_PRESIGNED_ENDPOINT_URL must remain loopback when specified"
-    }
-    $renderedCompose = Invoke-CheckedCommand "docker" @("compose", "config")
-    if (($renderedCompose -join "`n") -notmatch
-        "AWS_S3_PRESIGNED_ENDPOINT_URL:\s+http://localhost:4566") {
-        throw "Rendered API compose configuration must presign only for loopback LocalStack"
-    }
-    Invoke-CheckedCommand "docker" @("compose", "stop", "worker") | Out-Null
-    Invoke-CheckedCommand "docker" @("compose", "up", "-d", "--build", "postgres", "localstack") | Out-Null
-    Invoke-CheckedCommand "docker" @(
-        "compose", "up", "-d", "--build", "--force-recreate", "api", "web"
-    ) | Out-Null
-    $checks.local_compose = "PASS"
+    Assert-SafeSurface -Content $sessionHtml -PrivateValues $privateValues
+    $checks.v2_timeline = "PASS"
 
-    $currentCheck = "api_health"
-    Wait-ForJson "http://localhost:8000/health" {
-        param($value) $value.status -eq "ok" -and $value.environment -eq "development"
-    } | Out-Null
-    $checks.api_health = "PASS"
-
-    $currentCheck = "queue_baseline"
-    $queueUrl = (Invoke-CheckedCommand "docker" @(
-        "compose", "exec", "-T", "localstack", "awslocal", "sqs", "get-queue-url",
-        "--queue-name", "workflow-helper-processing", "--query", "QueueUrl", "--output", "text"
-    ) | Select-Object -Last 1).Trim()
-    $baseline = Get-QueueDepth $queueUrl
-    if ($baseline.Total -ne 0) {
-        throw "Synthetic LocalStack queue is not empty (visible, in-flight, or delayed); use a fresh controlled stack"
+    $currentCheck = "redacted_candidate"
+    $candidateResponse = Invoke-BoundedWebRequest "$webBase/candidate-review"
+    if ($candidateResponse.StatusCode -ne 200) {
+        throw "Synthetic candidate review page was unavailable"
     }
-    $checks.queue_baseline = "PASS"
-
-    $currentCheck = "package_register_upload"
-    if (Test-Path -LiteralPath $syntheticOutput) {
-        Remove-Item -LiteralPath $syntheticOutput -Recurse -Force
-    }
-    foreach ($name in @(
-        "Capture__CaptureEnabled",
-        "Capture__ConsentAcknowledged",
-        "Capture__OutputDirectory",
-        "Upload__Enabled",
-        "Upload__ApiBaseUrl"
+    $candidateHtml = [string]$candidateResponse.Content
+    foreach ($required in @(
+        "Candidate review queue",
+        "Candidates awaiting review",
+        "Candidate 1",
+        "LINE → TRIM → LINE → TRIM",
+        "observed / unreviewed",
+        "Approve"
     )) {
-        $savedEnvironment[$name] = [Environment]::GetEnvironmentVariable($name)
+        if (-not $candidateHtml.Contains($required)) {
+            throw "Redacted candidate evidence was incomplete"
+        }
     }
-    $env:Capture__CaptureEnabled = "false"
-    $env:Capture__ConsentAcknowledged = "false"
-    $env:Capture__OutputDirectory = $syntheticOutput
-    $env:Upload__Enabled = "true"
-    $env:Upload__ApiBaseUrl = "http://localhost:8000"
-    $runnerOutput = @(& dotnet run --project "apps/capture-agent/WorkflowHelper.CaptureAgent.csproj" -- --synthetic-pilot 2>&1 |
-        ForEach-Object { $_.ToString() })
-    $runnerExitCode = $LASTEXITCODE
-    $runnerJson = $runnerOutput |
-        Where-Object { $_.Trim().StartsWith("{") -and $_.Trim().EndsWith("}") } |
-        Select-Object -Last 1
-    if (-not $runnerJson) {
-        throw "Synthetic runner emitted no JSON evidence"
-    }
-    $runnerEvidence = $runnerJson | ConvertFrom-Json
-    if ($runnerExitCode -ne 0 -or $runnerEvidence.Result -ne "PASS" -or
-        $runnerEvidence.RecordingIncluded -ne $false) {
-        throw "Synthetic package/register/upload runner failed: $($runnerEvidence.Error)"
-    }
-    $evidence.package_sha256 = $runnerEvidence.PackageSha256
-    $evidence.package_size_bytes = $runnerEvidence.PackageSizeBytes
-    $checks.package_register_upload = "PASS"
+    Assert-SafeSurface -Content $candidateHtml -PrivateValues $privateValues -ForbidIdentifiers
+    $checks.redacted_candidate = "PASS"
 
-    $currentCheck = "queue_enqueue"
-    Wait-ForQueuedMessage $queueUrl | Out-Null
-    $checks.queue_enqueue = "PASS"
-
-    $currentCheck = "worker_timeline"
-    Invoke-CheckedCommand "docker" @("compose", "up", "-d", "--build", "worker") | Out-Null
-    $session = Wait-ForJson "http://localhost:8000/v1/sessions/$sessionId" {
-        param($value) $value.processing_status -eq "processed"
+    $currentCheck = "human_browser_confirmation"
+    $sessionUrl = "$webBase/sessions/$canonicalSessionId"
+    $candidateUrl = "$webBase/candidate-review"
+    Write-Host ""
+    Write-Host "Human confirmation is mandatory for this controlled pilot."
+    Write-Host "Review the timeline in the browser: $sessionUrl"
+    Write-Host "Review the redacted candidate in the browser: $candidateUrl"
+    try {
+        Start-Process -FilePath $sessionUrl | Out-Null
+        Start-Process -FilePath $candidateUrl | Out-Null
+    } catch {
+        Write-Warning "The browser could not be opened automatically; use the printed URLs."
     }
-    $timeline = Wait-ForJson "http://localhost:8000/v1/sessions/$sessionId/timeline" {
-        param($value) $value.event_count -eq 3 -and $value.meaningful_event_count -eq 3
+    $confirmation = Read-Host (
+        'Type exactly "APPROVE SYNTHETIC PILOT" only after both browser surfaces are visible and correct')
+    if ($confirmation -cne "APPROVE SYNTHETIC PILOT") {
+        throw "Human browser confirmation was not recorded"
     }
-    if ($timeline.timeline[1].summary -ne "AutoCAD command: SYNTHETIC_LINE") {
-        throw "Processed timeline does not contain the deterministic synthetic command"
+    $evidence.human_browser_confirmed = $true
+    $checks.human_browser_confirmation = "PASS"
+
+    $currentCheck = "approval_terminal_outcome"
+    $approvalArguments = @{
+        Uri = "$webBase/candidate-review/action"
+        Method = "POST"
+        Headers = @{ Origin = $webBase }
+        Body = "ordinal=1&action=approve"
+        ContentType = "application/x-www-form-urlencoded"
+        MaximumRedirection = 0
     }
-    $checks.worker_timeline = "PASS"
-
-    $currentCheck = "localstack_artifact"
-    Invoke-CheckedCommand "docker" @(
-        "compose", "exec", "-T", "localstack", "awslocal", "s3api", "head-object",
-        "--bucket", "workflow-helper-processed-dev",
-        "--key", "sessions/$sessionId/timeline.json"
-    ) | Out-Null
-    $checks.localstack_artifact = "PASS"
-
-    $currentCheck = "api_readback"
-    if ($session.review_status -ne "pending" -or
-        $session.raw_object_key -notlike "sessions/$sessionId/packages/*.zip") {
-        throw "API readback did not expose the expected processed synthetic session"
+    $approvalResponse = Invoke-BoundedWebRequest @approvalArguments
+    if (
+        $approvalResponse.StatusCode -ne 303 -or
+        -not [string]::IsNullOrEmpty([string]$approvalResponse.Content)
+    ) {
+        throw "Synthetic approval action did not return the fixed bodyless redirect"
     }
-    $checks.api_readback = "PASS"
+    $outcomeResponse = Invoke-BoundedWebRequest "$webBase/candidate-review"
+    if ($outcomeResponse.StatusCode -ne 200) {
+        throw "Approved terminal outcome was unavailable"
+    }
+    $outcomeHtml = [string]$outcomeResponse.Content
+    foreach ($required in @(
+        "No candidates awaiting review.",
+        "Review outcomes",
+        "Outcome 1",
+        "LINE → TRIM → LINE → TRIM",
+        "approved",
+        "No reason code"
+    )) {
+        if (-not $outcomeHtml.Contains($required)) {
+            throw "Approved terminal outcome evidence was incomplete"
+        }
+    }
+    Assert-SafeSurface -Content $outcomeHtml -PrivateValues $privateValues -ForbidIdentifiers
+    $checks.approval_terminal_outcome = "PASS"
 
-    $currentCheck = "web_readback"
-    Wait-ForWebContent "http://localhost:3000/sessions/$sessionId" @(
-        $sessionId,
-        "AutoCAD command: SYNTHETIC_LINE"
-    ) | Out-Null
-    $checks.web_readback = "PASS"
+    $currentCheck = "approved_catalog_export"
+    $catalogResponse = Invoke-BoundedWebRequest "$webBase/approved-workflows"
+    if ($catalogResponse.StatusCode -ne 200) {
+        throw "Approved workflow catalog was unavailable"
+    }
+    $catalogHtml = [string]$catalogResponse.Content
+    foreach ($required in @(
+        "Approved workflows",
+        "Approved workflow 1",
+        "LINE → TRIM → LINE → TRIM",
+        "observed / approved",
+        "Download JSON"
+    )) {
+        if (-not $catalogHtml.Contains($required)) {
+            throw "Approved workflow catalog evidence was incomplete"
+        }
+    }
+    Assert-SafeSurface -Content $catalogHtml -PrivateValues $privateValues -ForbidIdentifiers
+
+    $downloadResponse = Invoke-BoundedWebRequest (
+        "$webBase/approved-workflows/download?ordinal=1")
+    if ($downloadResponse.StatusCode -ne 200) {
+        throw "Approved workflow export was unavailable"
+    }
+    $downloadText = [string]$downloadResponse.Content
+    $downloadBytes = [Text.Encoding]::UTF8.GetBytes($downloadText)
+    if (
+        $downloadBytes.Length -gt 65536 -or
+        -not $downloadText.EndsWith([char]10)
+    ) {
+        throw "Approved workflow export was not bounded"
+    }
+    Assert-SafeSurface -Content $downloadText -PrivateValues $privateValues -ForbidIdentifiers
+    $downloadPayload = $downloadText | ConvertFrom-Json
+    $downloadKeys = @($downloadPayload.PSObject.Properties.Name | Sort-Object)
+    $expectedKeys = @(
+        "approval_status",
+        "command_sequence",
+        "decided_at",
+        "occurrence_count",
+        "provenance",
+        "schema",
+        "version"
+    )
+    if (
+        ($downloadKeys -join ",") -ne ($expectedKeys -join ",") -or
+        $downloadPayload.schema -ne "workflow-helper.approved-workflow" -or
+        $downloadPayload.version -ne "1.0" -or
+        (@($downloadPayload.command_sequence) -join ",") -ne
+            "LINE,TRIM,LINE,TRIM" -or
+        $downloadPayload.occurrence_count -ne 4 -or
+        $downloadPayload.provenance -ne "observed" -or
+        $downloadPayload.approval_status -ne "approved" -or
+        [string]::IsNullOrWhiteSpace([string]$downloadPayload.decided_at)
+    ) {
+        throw "Approved workflow export schema was invalid"
+    }
+    $checks.approved_catalog_export = "PASS"
+
+    $currentCheck = "independent_durable_reopen"
+    $independentVerifier = @'
+import os
+import runpy
+from datetime import UTC, datetime
+
+from workflow_api import dev_server
+
+seed = runpy.run_path("/workspace/dev-runtime-seed.py")
+driver = seed["_ASGIDriver"](dev_server.open_existing_app())
+headers = seed["_reviewer_headers"]()
+queue = driver.request(
+    "GET",
+    "/v1/control/candidate-publications/review-queue",
+    headers=headers,
+)
+outcomes = driver.request(
+    "GET",
+    "/v1/control/candidate-publications/review-outcomes",
+    headers=headers,
+)
+queue_payload = queue.json()
+outcome_payload = outcomes.json()
+items = outcome_payload.get("items")
+item = items[0] if isinstance(items, list) and len(items) == 1 else None
+if (
+    queue.status != 200
+    or queue_payload != {"items": [], "count": 0}
+    or outcomes.status != 200
+    or not isinstance(outcome_payload, dict)
+    or set(outcome_payload) != {"items", "count"}
+    or outcome_payload.get("count") != 1
+    or not isinstance(item, dict)
+    or set(item) != {
+        "command_sequence",
+        "occurrence_count",
+        "provenance",
+        "review_status",
+        "reason_code",
+        "decided_at_us",
+    }
+    or item.get("command_sequence") != ["LINE", "TRIM", "LINE", "TRIM"]
+    or item.get("occurrence_count") != 4
+    or item.get("provenance") != "observed"
+    or item.get("review_status") != "approved"
+    or item.get("reason_code") is not None
+    or type(item.get("decided_at_us")) is not int
+    or item["decided_at_us"] <= 0
+):
+    raise SystemExit("independent approved workflow verification failed")
+expected = (
+    datetime.fromtimestamp(item["decided_at_us"] / 1_000_000, tz=UTC)
+    .isoformat(timespec="milliseconds")
+    .replace("+00:00", "Z")
+)
+if expected != os.environ.get("EXPECTED_DECIDED_AT"):
+    raise SystemExit("independent approved decision time verification failed")
+print("synthetic approved workflow durability verified")
+'@
+    $reopenOutput = Invoke-Compose @(
+        "run", "--rm", "--no-deps", "-T",
+        "-e", "EXPECTED_DECIDED_AT=$($downloadPayload.decided_at)",
+        "seed", "python", "-c", $independentVerifier
+    )
+    if (
+        @($reopenOutput | Where-Object {
+            $_.Trim() -eq "synthetic approved workflow durability verified"
+        }).Count -ne 1
+    ) {
+        throw "Independent durable reopen evidence was not exact"
+    }
+    $checks.independent_durable_reopen = "PASS"
+
     $evidence.result = "PASS"
+    $finalExitCode = 0
 } catch {
-    $checks[$currentCheck] = "FAIL"
-    $evidence.error = $_.Exception.Message
-} finally {
-    foreach ($entry in $savedEnvironment.GetEnumerator()) {
-        [Environment]::SetEnvironmentVariable($entry.Key, $entry.Value)
+    if ($checks.Contains($currentCheck)) {
+        $checks[$currentCheck] = "FAIL"
     }
-    if (Test-Path -LiteralPath $syntheticOutput) {
-        Remove-Item -LiteralPath $syntheticOutput -Recurse -Force
+    $evidence.error = "Check failed: $currentCheck"
+    Write-Warning $_.Exception.Message
+} finally {
+    if ($runtimeStarted -and $null -ne $composePrefix) {
+        try {
+            Invoke-Compose @("down", "--volumes", "--remove-orphans") | Out-Null
+            $checks.scoped_cleanup = "PASS"
+        } catch {
+            $checks.scoped_cleanup = "FAIL"
+            $evidence.result = "FAIL"
+            $evidence.error = "Check failed: scoped_cleanup"
+            $finalExitCode = 1
+            Write-Warning "Scoped Compose cleanup failed"
+        }
+    } elseif ($PreflightOnly) {
+        $checks.scoped_cleanup = "PASS"
+    }
+    if ($null -ne $tempRoot -and (Test-Path -LiteralPath $tempRoot)) {
+        try {
+            Remove-Item -LiteralPath $tempRoot -Recurse -Force
+        } catch {
+            $checks.scoped_cleanup = "FAIL"
+            $evidence.result = "FAIL"
+            $evidence.error = "Check failed: scoped_cleanup"
+            $finalExitCode = 1
+            Write-Warning "Scoped temporary-state cleanup failed"
+        }
     }
     Pop-Location -ErrorAction SilentlyContinue
-    $resolvedEvidencePath = if ([IO.Path]::IsPathRooted($EvidencePath)) {
-        $EvidencePath
-    } else {
-        Join-Path $repoRoot $EvidencePath
-    }
-    $evidenceDirectory = Split-Path -Parent $resolvedEvidencePath
-    if ($evidenceDirectory) {
-        New-Item -ItemType Directory -Path $evidenceDirectory -Force | Out-Null
-    }
-    $json = $evidence | ConvertTo-Json -Depth 6
-    Set-Content -LiteralPath $resolvedEvidencePath -Value $json -Encoding utf8
-    Write-Output $json
+    Write-BoundedEvidence
 }
 
-if ($evidence.result -ne "PASS") { exit 1 }
+exit $finalExitCode
