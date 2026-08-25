@@ -257,7 +257,8 @@ dashboard_required = (
     ("active_review_metric", "Active review"),
     ("review_outcomes_metric", "Review outcomes"),
     ("approved_workflows_metric", "Approved workflows"),
-    ("active_review_count", "1 candidate awaiting review · independent queue snapshot"),
+    ("active_review_count", "1/0"),
+    ("active_review_detail", "Bounded snapshot (maximum 100): 1 unreviewed · 0 pending"),
     ("outcomes_empty_state", "No terminal outcomes recorded"),
     ("approved_empty_state", "No approved workflows yet"),
     ("candidate_review_link", "Review candidates"),
@@ -313,7 +314,7 @@ for html in (dashboard, detail):
     if re.search(r"candidate-(?:publication|skill):", html, re.IGNORECASE):
         raise SystemExit("session UI exposed a raw candidate identifier")
 PY
-echo "Dashboard lifecycle pre-review passed: active=1, outcomes=0, approved=0."
+echo "Dashboard lifecycle pre-review passed: active=1/0, outcomes=0, approved=0."
 
 status="$({
   curl --silent --show-error --max-time 10 \
@@ -528,7 +529,8 @@ for expected in (
     "Active review",
     "Review outcomes",
     "Approved workflows",
-    "No candidates awaiting review",
+    "0/0",
+    "Bounded snapshot (maximum 100): 0 unreviewed · 0 pending",
     "1 terminal outcome · independent outcomes snapshot",
     "1 approved workflow · derived from outcomes snapshot",
 ):
@@ -712,7 +714,7 @@ PY
     echo "Independent approved workflow durability verification was not exact." >&2
     exit 1
   fi
-  echo "Synthetic approved-workflow smoke passed: dashboard active=0, outcomes=1, approved=1; durable approval, safe catalog export, and independent reopen."
+  echo "Synthetic approved-workflow smoke passed: dashboard active=0/0, outcomes=1, approved=1; durable approval, safe catalog export, and independent reopen."
   exit 0
 fi
 
@@ -829,6 +831,88 @@ if re.search(
 if re.search(r"\b[a-f0-9]{64}\b", html, re.IGNORECASE):
     raise SystemExit("pending candidate page exposed a digest")
 PY
+
+status="$({
+  curl --silent --show-error --max-time 10 \
+    --output "$smoke_dir/pending-dashboard.html" --write-out '%{http_code}' \
+    "$web_base/"
+} || true)"
+if [[ "$status" != "200" ]]; then
+  echo "Pending dashboard returned HTTP $status." >&2
+  exit 1
+fi
+PENDING_DASHBOARD_HTML="$smoke_dir/pending-dashboard.html" \
+CAPTURE_PROOF="$capture_proof" \
+WORKER_PROOF="$worker_proof" \
+REVIEWER_PROOF="$reviewer_proof" \
+REVIEWER_SESSION="$reviewer_session" \
+REVIEWER_CSRF="$reviewer_csrf" \
+python3 - <<'PY'
+import os
+import re
+from html import unescape
+from html.parser import HTMLParser
+from pathlib import Path
+
+
+class VisibleTextParser(HTMLParser):
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.hidden_depth = 0
+        self.parts = []
+
+    def handle_starttag(self, tag, attrs):
+        if tag.casefold() in {"script", "style"}:
+            self.hidden_depth += 1
+
+    def handle_endtag(self, tag):
+        if tag.casefold() in {"script", "style"} and self.hidden_depth:
+            self.hidden_depth -= 1
+
+    def handle_data(self, data):
+        if not self.hidden_depth:
+            self.parts.append(data)
+
+
+def visible_text(value):
+    parser = VisibleTextParser()
+    parser.feed(value)
+    parser.close()
+    return " ".join(unescape(" ".join(parser.parts)).split())
+
+
+html = Path(os.environ["PENDING_DASHBOARD_HTML"]).read_text(encoding="utf-8")
+visible = visible_text(html)
+for expected in (
+    "Active review",
+    "0/1",
+    "Bounded snapshot (maximum 100): 0 unreviewed · 1 pending",
+    "Review outcomes",
+    "No terminal outcomes recorded",
+    "Approved workflows",
+    "No approved workflows yet",
+):
+    if expected not in visible:
+        raise SystemExit("post-start-review dashboard lifecycle counts were incomplete")
+if "1/0" in visible or "0/0" in visible:
+    raise SystemExit("post-start-review dashboard retained the wrong active counts")
+for value in (
+    os.environ["CAPTURE_PROOF"],
+    os.environ["WORKER_PROOF"],
+    os.environ["REVIEWER_PROOF"],
+    os.environ["REVIEWER_SESSION"],
+    os.environ["REVIEWER_CSRF"],
+    "publication_key",
+    "review_target_id",
+    "reason_code",
+    "sha256",
+):
+    if value in html:
+        raise SystemExit("post-start-review dashboard exposed private server evidence")
+if re.search(r"candidate-(?:publication|skill):", html, re.IGNORECASE):
+    raise SystemExit("post-start-review dashboard exposed a raw candidate identifier")
+PY
+echo "Dashboard lifecycle after start_review passed: active=0/1, outcomes=0, approved=0."
 
 # This synchronous no-port harness is the quiescent durability window.  It
 # must exit successfully before the live web/API is allowed to mutate again.
@@ -970,13 +1054,14 @@ for expected in (
     "Active review",
     "Review outcomes",
     "Approved workflows",
-    "No candidates awaiting review",
+    "0/0",
+    "Bounded snapshot (maximum 100): 0 unreviewed · 0 pending",
     "1 terminal outcome · independent outcomes snapshot",
     "No approved workflows yet",
 ):
     if expected not in visible:
         raise SystemExit("post-review dashboard lifecycle counts were incomplete")
-if "1 candidate awaiting review" in visible:
+if "1/0" in visible or "0/1" in visible:
     raise SystemExit("post-review dashboard retained an active candidate")
 for value in (
     os.environ["CAPTURE_PROOF"],
@@ -1156,4 +1241,4 @@ if [[ "$(cat "$smoke_dir/independent-verify.log")" != "synthetic candidate durab
   exit 1
 fi
 
-echo "Synthetic dev-runtime smoke passed: dashboard active=0, outcomes=1, approved=0; v2 seed, independent pending reopen, durable terminal outcome, and empty active queue reopen."
+echo "Synthetic dev-runtime smoke passed: dashboard active=0/0, outcomes=1, approved=0; v2 seed, independent pending reopen, durable terminal outcome, and empty active queue reopen."
