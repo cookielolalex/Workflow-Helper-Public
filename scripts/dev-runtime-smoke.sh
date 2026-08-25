@@ -250,20 +250,26 @@ detail_visible = visible_text(detail)
 session_id = os.environ["CANONICAL_SESSION"]
 
 dashboard_required = (
-    "Expert CAD workflow, made traceable.",
-    "CAD sessions",
-    "synthetic-pilot-machine",
-    "processed",
-    "Active review",
-    "Review outcomes",
-    "Approved workflows",
-    "1 candidate awaiting review · independent queue snapshot",
-    "No terminal outcomes recorded",
-    "No approved workflows yet",
-    "Review candidates",
+    ("hero", "Expert CAD workflow, made traceable."),
+    ("sessions_metric", "CAD sessions"),
+    ("machine_label", "synthetic-pilot-machine"),
+    ("processed_metric", "processed"),
+    ("active_review_metric", "Active review"),
+    ("review_outcomes_metric", "Review outcomes"),
+    ("approved_workflows_metric", "Approved workflows"),
+    ("active_review_count", "1 candidate awaiting review · independent queue snapshot"),
+    ("outcomes_empty_state", "No terminal outcomes recorded"),
+    ("approved_empty_state", "No approved workflows yet"),
+    ("candidate_review_link", "Review candidates"),
 )
-if any(value not in dashboard_visible for value in dashboard_required):
-    raise SystemExit("synthetic dashboard visible-text evidence was incomplete")
+missing_dashboard_labels = tuple(
+    label for label, value in dashboard_required if value not in dashboard_visible
+)
+if missing_dashboard_labels:
+    raise SystemExit(
+        "synthetic dashboard visible-text evidence missing labels: "
+        + ", ".join(missing_dashboard_labels)
+    )
 if "Pending review" in dashboard_visible:
     raise SystemExit("synthetic dashboard retained the stale session review metric")
 session_links = re.findall(r'href="/sessions/([0-9a-f-]{36})"', dashboard)
