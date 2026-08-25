@@ -784,15 +784,21 @@ function Assert-SafeExport {
 }
 
 function Invoke-Preflight {
+    $script:currentCheck = "evidence_boundary"
     $resolvedEvidence = Get-ResolvedEvidencePath $EvidencePath
     if ($TimeoutSeconds -lt 30 -or $TimeoutSeconds -gt 900) {
         Throw-SafeFailure "TimeoutSeconds is outside its bounded range"
     }
+    $script:currentCheck = "windows_powershell_dotnet"
     Assert-HostExpectations
+    $script:currentCheck = "configuration_safety"
     Assert-ComposeConfiguration
+    $script:currentCheck = "safety_defaults"
     Assert-SafetyDefaults
+    $script:currentCheck = "canonical_fixture"
     $script:canonicalFixture = Get-CanonicalFixture
     $script:sessionId = [string]$canonicalFixture.session_id
+    $script:currentCheck = "fail_closed_configuration"
     Assert-NoAmbientProviderConfiguration
     $checks.windows_powershell_dotnet = "PASS"
     $checks.safety_defaults = "PASS"
