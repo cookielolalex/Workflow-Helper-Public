@@ -250,15 +250,28 @@ detail_visible = visible_text(detail)
 session_id = os.environ["CANONICAL_SESSION"]
 
 dashboard_required = (
-    "Expert CAD workflow, made traceable.",
-    "CAD sessions",
-    "synthetic-pilot-machine",
-    "processed",
-    "pending",
-    "Review candidates",
+    ("hero", "Expert CAD workflow, made traceable."),
+    ("sessions_metric", "CAD sessions"),
+    ("machine_label", "synthetic-pilot-machine"),
+    ("processed_metric", "processed"),
+    ("active_review_metric", "Active review"),
+    ("review_outcomes_metric", "Review outcomes"),
+    ("approved_workflows_metric", "Approved workflows"),
+    ("active_review_count", "1 candidate awaiting review · independent queue snapshot"),
+    ("outcomes_empty_state", "No terminal outcomes recorded"),
+    ("approved_empty_state", "No approved workflows yet"),
+    ("candidate_review_link", "Review candidates"),
 )
-if any(value not in dashboard_visible for value in dashboard_required):
-    raise SystemExit("synthetic dashboard visible-text evidence was incomplete")
+missing_dashboard_labels = tuple(
+    label for label, value in dashboard_required if value not in dashboard_visible
+)
+if missing_dashboard_labels:
+    raise SystemExit(
+        "synthetic dashboard visible-text evidence missing labels: "
+        + ", ".join(missing_dashboard_labels)
+    )
+if "Pending review" in dashboard_visible:
+    raise SystemExit("synthetic dashboard retained the stale session review metric")
 session_links = re.findall(r'href="/sessions/([0-9a-f-]{36})"', dashboard)
 if session_links != [session_id]:
     raise SystemExit("synthetic dashboard did not expose exactly one canonical session")
@@ -292,12 +305,15 @@ for html in (dashboard, detail):
         os.environ["REVIEWER_CSRF"],
         "publication_key",
         "review_target_id",
+        "reason_code",
+        "sha256",
     ):
         if value in html:
             raise SystemExit("session UI exposed private server evidence")
     if re.search(r"candidate-(?:publication|skill):", html, re.IGNORECASE):
         raise SystemExit("session UI exposed a raw candidate identifier")
 PY
+echo "Dashboard lifecycle pre-review passed: active=1, outcomes=0, approved=0."
 
 status="$({
   curl --silent --show-error --max-time 10 \
@@ -429,6 +445,15 @@ if [[ "$smoke_scenario" == "approved" ]]; then
   fi
   status="$({
     curl --silent --show-error --max-time 10 \
+      --output "$smoke_dir/approved-dashboard.html" --write-out '%{http_code}' \
+      "$web_base/"
+  } || true)"
+  if [[ "$status" != "200" ]]; then
+    echo "Approved dashboard returned HTTP $status." >&2
+    exit 1
+  fi
+  status="$({
+    curl --silent --show-error --max-time 10 \
       --output "$smoke_dir/approved-catalog.html" --write-out '%{http_code}' \
       "$web_base/approved-workflows"
   } || true)"
@@ -449,6 +474,7 @@ if [[ "$smoke_scenario" == "approved" ]]; then
   fi
 
   APPROVED_EMPTY_HTML="$smoke_dir/approved-empty.html" \
+  APPROVED_DASHBOARD_HTML="$smoke_dir/approved-dashboard.html" \
   APPROVED_CATALOG_HTML="$smoke_dir/approved-catalog.html" \
   DOWNLOAD_HEADERS="$smoke_dir/download.headers" \
   DOWNLOAD_JSON="$smoke_dir/download.json" \
@@ -493,9 +519,21 @@ def visible_text(value):
 
 
 empty_html = Path(os.environ["APPROVED_EMPTY_HTML"]).read_text(encoding="utf-8")
+approved_dashboard_html = Path(os.environ["APPROVED_DASHBOARD_HTML"]).read_text(encoding="utf-8")
 catalog_html = Path(os.environ["APPROVED_CATALOG_HTML"]).read_text(encoding="utf-8")
 empty_visible = visible_text(empty_html)
+approved_dashboard_visible = visible_text(approved_dashboard_html)
 catalog_visible = visible_text(catalog_html)
+for expected in (
+    "Active review",
+    "Review outcomes",
+    "Approved workflows",
+    "No candidates awaiting review",
+    "1 terminal outcome · independent outcomes snapshot",
+    "1 approved workflow · derived from outcomes snapshot",
+):
+    if expected not in approved_dashboard_visible:
+        raise SystemExit("approved dashboard lifecycle counts were incomplete")
 if (
     "No candidates awaiting review." not in empty_visible
     or "approved" not in empty_visible
@@ -568,6 +606,8 @@ for surface in (empty_html, catalog_html, raw.decode("utf-8")):
         os.environ["REVIEWER_CSRF"],
         "publication_key",
         "review_target_id",
+        "reason_code",
+        "sha256",
     ):
         if value in surface:
             raise SystemExit("approved workflow surface exposed private server evidence")
@@ -581,6 +621,21 @@ for surface in (empty_html, catalog_html, raw.decode("utf-8")):
         raise SystemExit("approved workflow surface exposed a UUID")
     if re.search(r"\b[a-f0-9]{64}\b", surface, re.IGNORECASE):
         raise SystemExit("approved workflow surface exposed a digest")
+for value in (
+    os.environ["CAPTURE_PROOF"],
+    os.environ["WORKER_PROOF"],
+    os.environ["REVIEWER_PROOF"],
+    os.environ["REVIEWER_SESSION"],
+    os.environ["REVIEWER_CSRF"],
+    "publication_key",
+    "review_target_id",
+    "reason_code",
+    "sha256",
+):
+    if value in approved_dashboard_html:
+        raise SystemExit("approved dashboard exposed private server evidence")
+if re.search(r"candidate-(?:publication|skill):", approved_dashboard_html, re.IGNORECASE):
+    raise SystemExit("approved dashboard exposed a raw candidate identifier")
 PY
   approved_decided_at="$(DOWNLOAD_JSON="$smoke_dir/download.json" python3 - <<'PY'
 import json
@@ -657,7 +712,7 @@ PY
     echo "Independent approved workflow durability verification was not exact." >&2
     exit 1
   fi
-  echo "Synthetic approved-workflow smoke passed: durable approval, empty active queue, safe catalog export, and independent reopen."
+  echo "Synthetic approved-workflow smoke passed: dashboard active=0, outcomes=1, approved=1; durable approval, safe catalog export, and independent reopen."
   exit 0
 fi
 
@@ -860,6 +915,85 @@ if [[ "$status" != "200" ]]; then
   echo "Reviewed candidate page returned HTTP $status." >&2
   exit 1
 fi
+status="$({
+  curl --silent --show-error --max-time 10 \
+    --output "$smoke_dir/post-review-dashboard.html" --write-out '%{http_code}' \
+    "$web_base/"
+} || true)"
+if [[ "$status" != "200" ]]; then
+  echo "Post-review dashboard returned HTTP $status." >&2
+  exit 1
+fi
+POST_REVIEW_DASHBOARD_HTML="$smoke_dir/post-review-dashboard.html" \
+CAPTURE_PROOF="$capture_proof" \
+WORKER_PROOF="$worker_proof" \
+REVIEWER_PROOF="$reviewer_proof" \
+REVIEWER_SESSION="$reviewer_session" \
+REVIEWER_CSRF="$reviewer_csrf" \
+python3 - <<'PY'
+import os
+import re
+from html import unescape
+from html.parser import HTMLParser
+from pathlib import Path
+
+
+class VisibleTextParser(HTMLParser):
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.hidden_depth = 0
+        self.parts = []
+
+    def handle_starttag(self, tag, attrs):
+        if tag.casefold() in {"script", "style"}:
+            self.hidden_depth += 1
+
+    def handle_endtag(self, tag):
+        if tag.casefold() in {"script", "style"} and self.hidden_depth:
+            self.hidden_depth -= 1
+
+    def handle_data(self, data):
+        if not self.hidden_depth:
+            self.parts.append(data)
+
+
+def visible_text(value):
+    parser = VisibleTextParser()
+    parser.feed(value)
+    parser.close()
+    return " ".join(unescape(" ".join(parser.parts)).split())
+
+
+html = Path(os.environ["POST_REVIEW_DASHBOARD_HTML"]).read_text(encoding="utf-8")
+visible = visible_text(html)
+for expected in (
+    "Active review",
+    "Review outcomes",
+    "Approved workflows",
+    "No candidates awaiting review",
+    "1 terminal outcome · independent outcomes snapshot",
+    "No approved workflows yet",
+):
+    if expected not in visible:
+        raise SystemExit("post-review dashboard lifecycle counts were incomplete")
+if "1 candidate awaiting review" in visible:
+    raise SystemExit("post-review dashboard retained an active candidate")
+for value in (
+    os.environ["CAPTURE_PROOF"],
+    os.environ["WORKER_PROOF"],
+    os.environ["REVIEWER_PROOF"],
+    os.environ["REVIEWER_SESSION"],
+    os.environ["REVIEWER_CSRF"],
+    "publication_key",
+    "review_target_id",
+    "reason_code",
+    "sha256",
+):
+    if value in html:
+        raise SystemExit("post-review dashboard exposed private server evidence")
+if re.search(r"candidate-(?:publication|skill):", html, re.IGNORECASE):
+    raise SystemExit("post-review dashboard exposed a raw candidate identifier")
+PY
 EMPTY_HTML="$smoke_dir/empty.html" \
 CAPTURE_PROOF="$capture_proof" \
 WORKER_PROOF="$worker_proof" \
@@ -1022,4 +1156,4 @@ if [[ "$(cat "$smoke_dir/independent-verify.log")" != "synthetic candidate durab
   exit 1
 fi
 
-echo "Synthetic dev-runtime smoke passed: v2 seed, independent pending reopen, durable terminal outcome, and empty active queue reopen."
+echo "Synthetic dev-runtime smoke passed: dashboard active=0, outcomes=1, approved=0; v2 seed, independent pending reopen, durable terminal outcome, and empty active queue reopen."

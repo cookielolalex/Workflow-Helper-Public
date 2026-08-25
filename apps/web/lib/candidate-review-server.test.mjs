@@ -481,6 +481,53 @@ test("approved page and route keep authority and raw bindings server-side", () =
   }
 });
 
+test("dashboard lifecycle counts use independent server snapshots", () => {
+  const page = readFileSync(
+    new URL("../app/page.tsx", import.meta.url),
+    "utf-8",
+  );
+  assert.match(page, /loadCandidateReviewQueue/);
+  assert.match(page, /loadCandidateReviewOutcomes/);
+  assert.match(page, /Promise\.all/);
+  assert.match(page, /reviewQueue\.status === "unavailable"/);
+  assert.match(page, /reviewQueue\.status === "empty"/);
+  assert.match(page, /reviewQueue\.rows\.length/);
+  assert.match(page, /reviewOutcomes\.status === "unavailable"/);
+  assert.match(page, /reviewOutcomes\.status === "empty"/);
+  assert.match(page, /reviewOutcomes\.rows\.length/);
+  assert.match(page, /row\.review_status === "approved"/);
+  assert.doesNotMatch(page, /loadApprovedWorkflows/);
+  for (const forbidden of [
+    "NEXT_PUBLIC",
+    "WORKFLOW_DEV_REVIEWER",
+    "WORKFLOW_REVIEW_API_BASE_URL",
+    "publication_key",
+    "review_target_id",
+    "reason_code",
+    "sha256",
+    "credentials",
+    "cookie",
+  ]) {
+    assert.equal(page.includes(forbidden), false, `dashboard leaked ${forbidden}`);
+  }
+});
+
+test("dashboard normalizes empty approved outcomes before rendering", () => {
+  const page = readFileSync(
+    new URL("../app/page.tsx", import.meta.url),
+    "utf-8",
+  );
+  assert.match(
+    page,
+    /const approvedCount =\s*reviewOutcomes\.status === "populated"\s*\?\s*reviewOutcomes\.rows\.filter\(\(row\) => row\.review_status === "approved"\)\.length\s*:\s*0;/s,
+  );
+  assert.match(page, /value: approvedCount,/);
+  assert.match(page, /detail:\s*\n\s*approvedCount === 0\s*\?/);
+  assert.match(page, /tone: approvedCount \? \("good" as const\) : \("neutral" as const\)/);
+  assert.doesNotMatch(page, /value: approvedCount \?\? 0/);
+  assert.doesNotMatch(page, /approvedCount === null/);
+});
+
 test("each legal effective-state action re-fetches and posts exactly once", async () => {
   configure();
   for (const [reviewStatus, action, destination, reasonCode] of [
