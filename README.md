@@ -78,12 +78,31 @@ Run the dependency-light checks with:
 python scripts/validate.py
 ```
 
-For the bounded generated-data-only Windows/LocalStack compatibility pilot,
-follow [`docs/WINDOWS_SYNTHETIC_PILOT.md`](docs/WINDOWS_SYNTHETIC_PILOT.md).
-That compatibility harness is separate from the guarded candidate-review
-slice. The latter is exercised by `scripts/dev-runtime-smoke.sh`; it never
-enables or exercises real capture and does not connect to Google Drive, use
-live credentials, or contact any billable cloud service.
+For the sanctioned controlled generated-data-only Windows pilot, follow
+[`docs/WINDOWS_SYNTHETIC_PILOT.md`](docs/WINDOWS_SYNTHETIC_PILOT.md). The
+sanctioned full-pilot entrypoint is
+`pwsh -NoProfile -File scripts/windows-synthetic-pilot.ps1`. It uses a fresh,
+uniquely named sealed runtime and the canonical recording-absent rich package:
+upload receipt → v2 timeline (eight meaningful operations/eight lifecycle
+events/four segments) → redacted
+`LINE → TRIM → LINE → TRIM` candidate → human review → terminal approval →
+approved catalog → bounded safe export → independent durable reopen. Its
+redacted evidence stays local and untracked.
+
+Windows CI runs only the preflight:
+`pwsh -NoProfile -File scripts/windows-synthetic-pilot.ps1 -PreflightOnly`.
+Preflight is non-Docker and no-network: it checks the host, disabled capture
+defaults, recording-free canonical fixture, and prohibited ambient credentials;
+it does not start Compose or prove the pilot lifecycle. The full command is a
+separate controlled-host integration gate requiring an explicit human browser
+confirmation.
+
+Neither pilot mode enables or exercises real capture, opens a recording,
+connects Google Drive or another live provider, uses live credentials, invokes
+a model, or contacts a billable cloud service. The canonical fixture has
+`recording: null`; committed capture, consent, and upload defaults remain
+`false`. The repository remains `PLATFORM_BLOCKED` until controlled-host
+evidence and the human gate exist. A CI preflight pass is not a pilot result.
 
 ## Safety defaults
 
