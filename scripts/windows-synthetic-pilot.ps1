@@ -346,12 +346,14 @@ function Assert-NoAmbientProviderConfiguration {
         "WORKFLOW_DEV_REVIEWER_SESSION",
         "WORKFLOW_DEV_REVIEWER_CSRF"
     )
+    $script:currentCheck = "forbidden_provider_name_scan"
     foreach ($name in $forbiddenNames) {
         $value = Get-EnvironmentValue $name
         if (-not [string]::IsNullOrWhiteSpace($value)) {
             Throw-SafeFailure "Ambient provider or runtime configuration is present"
         }
     }
+    $script:currentCheck = "provider_prefix_scan"
     foreach ($entry in Get-ChildItem Env:) {
         if (
             -not [string]::IsNullOrWhiteSpace([string]$entry.Value) -and
@@ -361,6 +363,7 @@ function Assert-NoAmbientProviderConfiguration {
         }
     }
 
+    $script:currentCheck = "environment_file_scan"
     $environmentFiles = @(Get-ChildItem -LiteralPath $repoRoot -Filter ".env*" -File -Force -ErrorAction SilentlyContinue)
     foreach ($file in $environmentFiles) {
         if ($file.Name -in @(".env.example", ".env.template")) { continue }
