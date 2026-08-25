@@ -56,7 +56,7 @@ export default async function DashboardPage() {
   const approvedCount =
     reviewOutcomes.status === "populated"
       ? reviewOutcomes.rows.filter((row) => row.review_status === "approved").length
-      : null;
+      : 0;
   const reviewOutcomesMetric =
     reviewOutcomes.status === "unavailable"
       ? {
@@ -83,7 +83,7 @@ export default async function DashboardPage() {
           tone: "warning" as const,
         }
       : {
-          value: approvedCount ?? 0,
+          value: approvedCount,
           detail:
             approvedCount === 0
               ? "No approved workflows yet"

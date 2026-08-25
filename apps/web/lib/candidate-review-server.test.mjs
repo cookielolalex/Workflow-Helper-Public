@@ -512,6 +512,22 @@ test("dashboard lifecycle counts use independent server snapshots", () => {
   }
 });
 
+test("dashboard normalizes empty approved outcomes before rendering", () => {
+  const page = readFileSync(
+    new URL("../app/page.tsx", import.meta.url),
+    "utf-8",
+  );
+  assert.match(
+    page,
+    /const approvedCount =\s*reviewOutcomes\.status === "populated"\s*\?\s*reviewOutcomes\.rows\.filter\(\(row\) => row\.review_status === "approved"\)\.length\s*:\s*0;/s,
+  );
+  assert.match(page, /value: approvedCount,/);
+  assert.match(page, /detail:\s*\n\s*approvedCount === 0\s*\?/);
+  assert.match(page, /tone: approvedCount \? \("good" as const\) : \("neutral" as const\)/);
+  assert.doesNotMatch(page, /value: approvedCount \?\? 0/);
+  assert.doesNotMatch(page, /approvedCount === null/);
+});
+
 test("each legal effective-state action re-fetches and posts exactly once", async () => {
   configure();
   for (const [reviewStatus, action, destination, reasonCode] of [
