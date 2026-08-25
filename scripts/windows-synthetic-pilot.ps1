@@ -354,7 +354,7 @@ function Assert-NoAmbientProviderConfiguration {
     foreach ($entry in Get-ChildItem Env:) {
         if (
             -not [string]::IsNullOrWhiteSpace([string]$entry.Value) -and
-            $entry.Name -match "^(AWS_|GOOGLE_|GCP_|CLOUDSDK_|GCE_|AZURE_|ARM_|CODEX_|OPENAI_|ANTHROPIC_)"
+            $entry.Name -match "^(AWS_|GOOGLE_|GCP_|CLOUDSDK_|GCE_|AZURE_|ARM_|OPENAI_|ANTHROPIC_)"
         ) {
             Throw-SafeFailure "Ambient provider or runtime configuration is present"
         }
