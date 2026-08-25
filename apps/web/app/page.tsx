@@ -59,11 +59,17 @@ export default async function DashboardPage() {
             detail: `Bounded snapshot (maximum 100): ${unreviewedCount} unreviewed · ${pendingCount} pending`,
             tone: unreviewedCount || pendingCount ? ("warning" as const) : ("neutral" as const),
           };
-  const outcomeCount =
-    reviewOutcomes.status === "populated" ? reviewOutcomes.rows.length : null;
   const approvedCount =
     reviewOutcomes.status === "populated"
       ? reviewOutcomes.rows.filter((row) => row.review_status === "approved").length
+      : 0;
+  const rejectedCount =
+    reviewOutcomes.status === "populated"
+      ? reviewOutcomes.rows.filter((row) => row.review_status === "rejected").length
+      : 0;
+  const needsChangesCount =
+    reviewOutcomes.status === "populated"
+      ? reviewOutcomes.rows.filter((row) => row.review_status === "needs_changes").length
       : 0;
   const reviewOutcomesMetric =
     reviewOutcomes.status === "unavailable"
@@ -74,13 +80,13 @@ export default async function DashboardPage() {
         }
       : reviewOutcomes.status === "empty"
         ? {
-            value: 0,
-            detail: "No terminal outcomes recorded",
+            value: "0/0/0",
+            detail: "Bounded snapshot (maximum 100): 0 approved · 0 rejected · 0 needs_changes",
             tone: "neutral" as const,
           }
         : {
-            value: outcomeCount!,
-            detail: `${outcomeCount} ${outcomeCount === 1 ? "terminal outcome" : "terminal outcomes"} · independent outcomes snapshot`,
+            value: `${approvedCount}/${rejectedCount}/${needsChangesCount}`,
+            detail: `Bounded snapshot (maximum 100): ${approvedCount} approved · ${rejectedCount} rejected · ${needsChangesCount} needs_changes`,
             tone: "neutral" as const,
           };
   const approvedWorkflowsMetric =

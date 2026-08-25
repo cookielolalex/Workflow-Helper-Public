@@ -259,7 +259,8 @@ dashboard_required = (
     ("approved_workflows_metric", "Approved workflows"),
     ("active_review_count", "1/0"),
     ("active_review_detail", "Bounded snapshot (maximum 100): 1 unreviewed · 0 pending"),
-    ("outcomes_empty_state", "No terminal outcomes recorded"),
+    ("outcomes_breakdown", "0/0/0"),
+    ("outcomes_detail", "Bounded snapshot (maximum 100): 0 approved · 0 rejected · 0 needs_changes"),
     ("approved_empty_state", "No approved workflows yet"),
     ("candidate_review_link", "Review candidates"),
 )
@@ -314,7 +315,7 @@ for html in (dashboard, detail):
     if re.search(r"candidate-(?:publication|skill):", html, re.IGNORECASE):
         raise SystemExit("session UI exposed a raw candidate identifier")
 PY
-echo "Dashboard lifecycle pre-review passed: active=1/0, outcomes=0, approved=0."
+echo "Dashboard lifecycle pre-review passed: active=1/0, outcomes=0/0/0, approved=0."
 
 status="$({
   curl --silent --show-error --max-time 10 \
@@ -531,7 +532,8 @@ for expected in (
     "Approved workflows",
     "0/0",
     "Bounded snapshot (maximum 100): 0 unreviewed · 0 pending",
-    "1 terminal outcome · independent outcomes snapshot",
+    "1/0/0",
+    "Bounded snapshot (maximum 100): 1 approved · 0 rejected · 0 needs_changes",
     "1 approved workflow · derived from outcomes snapshot",
 ):
     if expected not in approved_dashboard_visible:
@@ -714,7 +716,7 @@ PY
     echo "Independent approved workflow durability verification was not exact." >&2
     exit 1
   fi
-  echo "Synthetic approved-workflow smoke passed: dashboard active=0/0, outcomes=1, approved=1; durable approval, safe catalog export, and independent reopen."
+  echo "Synthetic approved-workflow smoke passed: dashboard active=0/0, outcomes=1/0/0, approved=1; durable approval, safe catalog export, and independent reopen."
   exit 0
 fi
 
@@ -888,13 +890,14 @@ for expected in (
     "0/1",
     "Bounded snapshot (maximum 100): 0 unreviewed · 1 pending",
     "Review outcomes",
-    "No terminal outcomes recorded",
+    "0/0/0",
+    "Bounded snapshot (maximum 100): 0 approved · 0 rejected · 0 needs_changes",
     "Approved workflows",
     "No approved workflows yet",
 ):
     if expected not in visible:
         raise SystemExit("post-start-review dashboard lifecycle counts were incomplete")
-if "1/0" in visible or "0/0" in visible:
+if "1/0" in visible or re.search(r"(?<!/)0/0(?!/)", visible):
     raise SystemExit("post-start-review dashboard retained the wrong active counts")
 for value in (
     os.environ["CAPTURE_PROOF"],
@@ -1056,7 +1059,8 @@ for expected in (
     "Approved workflows",
     "0/0",
     "Bounded snapshot (maximum 100): 0 unreviewed · 0 pending",
-    "1 terminal outcome · independent outcomes snapshot",
+    "0/0/1",
+    "Bounded snapshot (maximum 100): 0 approved · 0 rejected · 1 needs_changes",
     "No approved workflows yet",
 ):
     if expected not in visible:
@@ -1241,4 +1245,4 @@ if [[ "$(cat "$smoke_dir/independent-verify.log")" != "synthetic candidate durab
   exit 1
 fi
 
-echo "Synthetic dev-runtime smoke passed: dashboard active=0/0, outcomes=1, approved=0; v2 seed, independent pending reopen, durable terminal outcome, and empty active queue reopen."
+echo "Synthetic dev-runtime smoke passed: dashboard active=0/0, outcomes=0/0/1, approved=0; v2 seed, independent pending reopen, durable terminal outcome, and empty active queue reopen."
