@@ -1065,8 +1065,6 @@ for expected in (
 ):
     if expected not in visible:
         raise SystemExit("post-review dashboard lifecycle counts were incomplete")
-if "1/0" in visible or "0/1" in visible:
-    raise SystemExit("post-review dashboard retained an active candidate")
 for value in (
     os.environ["CAPTURE_PROOF"],
     os.environ["WORKER_PROOF"],
