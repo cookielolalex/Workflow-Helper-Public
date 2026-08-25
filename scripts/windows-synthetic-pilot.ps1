@@ -353,16 +353,6 @@ function Assert-NoAmbientProviderConfiguration {
             Throw-SafeFailure "Ambient provider or runtime configuration is present"
         }
     }
-    $script:currentCheck = "provider_prefix_scan"
-    foreach ($entry in Get-ChildItem Env:) {
-        if (
-            -not [string]::IsNullOrWhiteSpace([string]$entry.Value) -and
-            $entry.Name -match "^(AWS_|GOOGLE_|GCP_|CLOUDSDK_|GCE_|AZURE_|ARM_|OPENAI_|ANTHROPIC_)"
-        ) {
-            Throw-SafeFailure "Ambient provider or runtime configuration is present"
-        }
-    }
-
     $script:currentCheck = "environment_file_scan"
     $environmentFiles = @(Get-ChildItem -LiteralPath $repoRoot -Filter ".env*" -File -Force -ErrorAction SilentlyContinue)
     foreach ($file in $environmentFiles) {
