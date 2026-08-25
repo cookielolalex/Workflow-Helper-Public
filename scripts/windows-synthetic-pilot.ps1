@@ -76,10 +76,11 @@ function Get-ResolvedEvidencePath {
     $candidate = if ([IO.Path]::IsPathRooted($Path)) { $Path } else { Join-Path $repoRoot $Path }
     $resolved = [IO.Path]::GetFullPath($candidate)
     $relative = [IO.Path]::GetRelativePath($repoRoot, $resolved)
+    $expectedRelative = Join-Path "pilot-evidence" "windows-synthetic-pilot.json"
     if (
         $relative -eq ".." -or
         $relative.StartsWith("..$([IO.Path]::DirectorySeparatorChar)") -or
-        -not $relative.Equals("pilot-evidence/windows-synthetic-pilot.json", [StringComparison]::OrdinalIgnoreCase)
+        -not $relative.Equals($expectedRelative, [StringComparison]::OrdinalIgnoreCase)
     ) {
         Throw-SafeFailure "Evidence must remain at the bounded local pilot-evidence path"
     }
