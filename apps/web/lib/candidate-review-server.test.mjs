@@ -495,8 +495,9 @@ test("dashboard lifecycle counts use independent server snapshots", () => {
   assert.match(page, /reviewQueue\.rows\.filter\(\(row\) => row\.review_status === "pending"\)/);
   assert.match(page, /reviewOutcomes\.status === "unavailable"/);
   assert.match(page, /reviewOutcomes\.status === "empty"/);
-  assert.match(page, /reviewOutcomes\.rows\.length/);
-  assert.match(page, /row\.review_status === "approved"/);
+  assert.match(page, /reviewOutcomes\.rows\.filter\(\(row\) => row\.review_status === "approved"\)/);
+  assert.match(page, /reviewOutcomes\.rows\.filter\(\(row\) => row\.review_status === "rejected"\)/);
+  assert.match(page, /reviewOutcomes\.rows\.filter\(\(row\) => row\.review_status === "needs_changes"\)/);
   assert.doesNotMatch(page, /loadApprovedWorkflows/);
   for (const forbidden of [
     "NEXT_PUBLIC",
@@ -547,6 +548,26 @@ test("dashboard lifecycle counts use bounded queue status filters", () => {
   assert.match(page, /Bounded snapshot \(maximum 100\): \$\{unreviewedCount\} unreviewed · \$\{pendingCount\} pending/);
   assert.match(page, /reviewQueue\.status === "loading"/);
   assert.doesNotMatch(page, /pendingReview/);
+});
+
+test("dashboard lifecycle outcomes use one bounded independent breakdown", () => {
+  const page = readFileSync(
+    new URL("../app/page.tsx", import.meta.url),
+    "utf-8",
+  );
+  assert.match(
+    page,
+    /const rejectedCount =\s*reviewOutcomes\.status === "populated"\s*\?\s*reviewOutcomes\.rows\.filter\(\(row\) => row\.review_status === "rejected"\)\.length\s*:\s*0;/s,
+  );
+  assert.match(
+    page,
+    /const needsChangesCount =\s*reviewOutcomes\.status === "populated"\s*\?\s*reviewOutcomes\.rows\.filter\(\(row\) => row\.review_status === "needs_changes"\)\.length\s*:\s*0;/s,
+  );
+  assert.match(page, /value: "0\/0\/0"/);
+  assert.match(page, /Bounded snapshot \(maximum 100\): 0 approved · 0 rejected · 0 needs_changes/);
+  assert.match(page, /Bounded snapshot \(maximum 100\): \$\{approvedCount\} approved · \$\{rejectedCount\} rejected · \$\{needsChangesCount\} needs_changes/);
+  assert.doesNotMatch(page, /outcomeCount/);
+  assert.doesNotMatch(page, /reviewQueue\.rows\.length.*reviewOutcomes\.rows/s);
 });
 
 test("each legal effective-state action re-fetches and posts exactly once", async () => {
