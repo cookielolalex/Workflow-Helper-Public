@@ -9,7 +9,7 @@
     "deploy": "cdk deploy"
   },
   "dependencies": {
-    "aws-cdk-lib": "^2.180.0",
+    "aws-cdk-lib": "^2.267.0",
     "constructs": "^10.4.2",
     "source-map-support": "^0.5.21"
   },
